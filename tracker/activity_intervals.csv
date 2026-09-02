@@ -1,0 +1,5 @@
+process_id,process_name,window_title,start_time,end_time,duration_seconds
+15956,Code.exe,tracker.py - study-tracker - Visual Studio Code,2026-09-02T08:29:21.731335+00:00,2026-09-02T08:29:27.732640+00:00,6
+19832,ChatGPT.exe,ChatGPT,2026-09-02T08:29:27.732640+00:00,2026-09-02T08:29:31.740974+00:00,4
+13052,chrome.exe,Manage access - Google Chrome,2026-09-02T08:29:31.740974+00:00,2026-09-02T08:29:33.743885+00:00,2
+15956,Code.exe,tracker.py - study-tracker - Visual Studio Code,2026-09-02T08:29:33.743885+00:00,2026-09-02T08:29:36.946736+00:00,3
