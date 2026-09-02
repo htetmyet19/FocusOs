@@ -8,9 +8,16 @@ import win32gui
 import win32process
 
 POLL_SECONDS = 2
-LOG_FILE = Path("activity_log.csv")
+LOG_FILE = Path("activity_intervals.csv")
 
-FIELDS = ["timestamp", "process_id", "process_name", "window_title"]
+FIELDS = [
+    "process_id",
+    "process_name",
+    "window_title",
+    "start_time",
+    "end_time",
+    "duration_seconds",
+]
 
 
 def get_active_window_info():
@@ -29,7 +36,6 @@ def get_active_window_info():
         process_name = "unknown"
 
     return {
-        "timestamp": datetime.now().isoformat(timespec="seconds"),
         "process_id": process_id,
         "process_name": process_name,
         "window_title": window_title or "[No window title]",
@@ -37,7 +43,7 @@ def get_active_window_info():
 
 
 def save_to_csv(record):
-    """Append one monitoring record to the CSV log."""
+    """Append one completed window-use interval to the CSV file."""
     file_exists = LOG_FILE.exists()
 
     with LOG_FILE.open("a", newline="", encoding="utf-8") as file:
@@ -50,38 +56,66 @@ def save_to_csv(record):
 
 
 def main():
-    print("Study Tracker started. Press Ctrl+C to stop.\n")
-
     current_window = get_active_window_info()
 
-    start_time = datetime.now(timezone.utc)   # saved in log/DB
-    start_tick = time.monotonic()             # used only for duration
+    if not current_window:
+        print("Could not detect an active window.")
+        return
 
-    while True:
-        time.sleep(2)
-        new_window = get_active_window_info()
+    start_time = datetime.now(timezone.utc)
+    start_tick = time.monotonic()
 
-        if new_window and (
-            new_window["process_name"] != current_window["process_name"]
-            or new_window["window_title"] != current_window["window_title"]
-        ):
-            end_time = datetime.now(timezone.utc)
-            duration_seconds = round(time.monotonic() - start_tick)
+    print("Tracker started. Press Ctrl+C to stop.")
 
-            record = {
-                "process_name": current_window["process_name"],
-                "window_title": current_window["window_title"],
-                "start_time": start_time.isoformat(),
-                "end_time": end_time.isoformat(),
-                "duration_seconds": duration_seconds,
-            }
+    try:
+        while True:
+            time.sleep(POLL_SECONDS)
+            new_window = get_active_window_info()
 
-            print(record)  # Later: save this record to SQLite
+            if not new_window:
+                continue
 
-            # Begin tracking the newly active window
-            current_window = new_window
-            start_time = end_time
-            start_tick = time.monotonic()
+            changed = (
+                new_window["process_id"] != current_window["process_id"]
+                or new_window["window_title"] != current_window["window_title"]
+            )
+
+            if changed:
+                end_time = datetime.now(timezone.utc)
+
+                record = {
+                    "process_id": current_window["process_id"],
+                    "process_name": current_window["process_name"],
+                    "window_title": current_window["window_title"],
+                    "start_time": start_time.isoformat(),
+                    "end_time": end_time.isoformat(),
+                    "duration_seconds": round(time.monotonic() - start_tick),
+                }
+
+                save_to_csv(record)
+                print("Saved:", record)
+
+                current_window = new_window
+                start_time = end_time
+                start_tick = time.monotonic()
+
+    except KeyboardInterrupt:
+        print("\nStopping tracker...")
+
+    finally:
+        end_time = datetime.now(timezone.utc)
+
+        record = {
+            "process_id": current_window["process_id"],
+            "process_name": current_window["process_name"],
+            "window_title": current_window["window_title"],
+            "start_time": start_time.isoformat(),
+            "end_time": end_time.isoformat(),
+            "duration_seconds": round(time.monotonic() - start_tick),
+        }
+
+        save_to_csv(record)
+        print("Final record saved.")
 
 
 if __name__ == "__main__":
