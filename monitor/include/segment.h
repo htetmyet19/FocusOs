@@ -14,5 +14,7 @@ struct Segment {
     std::chrono::system_clock::time_point start_time;
     std::chrono::system_clock::time_point end_time;
 
+    std::string category = "Neutral";
+
     long long duration_seconds = 0;
 };

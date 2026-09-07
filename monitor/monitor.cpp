@@ -13,8 +13,10 @@
 #include <vector>
 
 #include "include/segment.h"
-
-constexpr auto POLL_INTERVAL = std::chrono::seconds(2);
+#include "include/segment_queue.h"
+#include "db_client.h"
+#include "config.h"
+#include "category_rules.h"
 
 std::atomic<bool> running{true};
 
@@ -184,6 +186,7 @@ Segment createSegment(
     segment.process_id = window.process_id;
     segment.process_name = window.process_name;
     segment.window_title = window.window_title;
+    segment.category = category_rules::classifyProcess(window.process_name);
     segment.start_time = start_time;
     segment.end_time = end_time;
 
@@ -206,9 +209,64 @@ void printSegment(const Segment& segment) {
               << "Duration: " << segment.duration_seconds << " seconds\n";
 }
 
+void writerLoop(
+    SegmentQueue& segment_queue,
+    DbClient::Config database_config
+) {
+    DbClient database(std::move(database_config));
+    std::string error;
+
+    if (!database.connect(error)) {
+        std::cerr << "Database connection failed: " << error << "\n";
+        return;
+    }
+
+    long long session_id = 0;
+
+    if (!database.startSession(session_id, error)) {
+        std::cerr << "Could not create study session: " << error << "\n";
+        return;
+    }
+
+    std::cout << "Database session started. ID: "
+              << session_id << "\n";
+
+    // This loop saves every queued segment.
+    while (auto segment = segment_queue.waitAndPop()) {
+        if (!database.insertSegment(session_id, *segment, error)) {
+            std::cerr << "Could not save segment: " << error << "\n";
+            continue;
+        }
+
+        std::cout << "Saved to MySQL: "
+                  << segment->process_name << "\n";
+    }
+
+    // This runs only once: after the queue is closed and empty.
+    std::cout << "Closing database session " << session_id << "...\n";
+
+    if (!database.endSession(session_id, error)) {
+        std::cerr << "Could not end session: " << error << "\n";
+    } else {
+        std::cout << "Database session ended successfully.\n";
+    }
+
+    std::cout << "Writer thread stopped safely.\n";
+}
+
 
 int main() {
+    AppConfig app_config;
+
+try {
+    app_config = loadConfig();
+    } catch (const std::exception& error) {
+        std::cerr << "Configuration error: " << error.what() << "\n";
+        return 1;
+    }
     SetConsoleCtrlHandler(handleConsoleEvent, TRUE);
+
+    SegmentQueue segment_queue;
 
     std::optional<ActiveWindow> detected_window = getActiveWindow();
 
@@ -225,8 +283,14 @@ int main() {
               << "Switch applications to create segments.\n"
               << "Press Ctrl+C to stop.\n";
 
+    std::thread writer_thread(
+    writerLoop,
+    std::ref(segment_queue),
+    app_config.database
+    );
+
     while (running) {
-        std::this_thread::sleep_for(POLL_INTERVAL);
+        std::this_thread::sleep_for(app_config.poll_interval);
 
         if (!running) {
             break;
@@ -252,7 +316,7 @@ int main() {
             segment_end
         );
 
-        printSegment(completed_segment);
+        segment_queue.push(std::move(completed_segment));
 
         // Later: push completed_segment into the writer queue here.
 
@@ -269,7 +333,9 @@ int main() {
         final_end
     );
 
-    printSegment(final_segment);
+    segment_queue.push(std::move(final_segment));
+    segment_queue.close();
+    writer_thread.join();
 
     std::cout << "\nMonitor stopped safely.\n";
     return 0;
