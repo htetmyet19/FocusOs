@@ -4,3 +4,6 @@ __pycache__/
 *.pyc
 .env
 .vscode/
+monitor/config.ini
+build/
+build-vs/
