@@ -1,0 +1,101 @@
+/* Swiss / minimalist: one grid, one typeface, black on white, red as the only accent */
+:root {
+  color-scheme:light;
+  --bg:#fff; --fg:#111; --muted:#767676; --rule:#dcdcdc; --accent:#e30613;
+  --productive:#1d4ed8; --neutral:#b5b5b5; --distracting:#e30613; --idle:#e6e6e6;
+  --u:8px;
+}
+* { box-sizing:border-box; }
+html,body { margin:0; }
+body { font:400 14px/1.5 Inter,"Helvetica Neue",Helvetica,Arial,sans-serif; background:var(--bg); color:var(--fg);
+  font-feature-settings:"tnum"; -webkit-font-smoothing:antialiased; }
+:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+button,select { font:inherit; color:inherit; background:none; border:0; padding:0; cursor:pointer; }
+
+/* Header: 12-column grid, everything flush left on shared edges */
+.top, main { max-width:1280px; margin:0 auto; padding-left:40px; padding-right:40px; }
+.top { display:grid; grid-template-columns:repeat(12,1fr); column-gap:24px; row-gap:16px; padding-top:32px; padding-bottom:16px;
+  border-bottom:2px solid var(--fg); align-items:baseline; }
+.top h1 { grid-column:1 / span 3; margin:0; font-size:20px; font-weight:700; letter-spacing:-.02em; }
+.tabs { grid-column:4 / span 5; display:flex; gap:24px; }
+.controls { grid-column:9 / span 4; display:flex; flex-wrap:wrap; gap:8px 16px; align-items:baseline; justify-content:flex-end; }
+.tabs button, .range button, #refresh { color:var(--muted); padding:2px 0; border-bottom:2px solid transparent; transition:color .15s; }
+.tabs button:hover, .range button:hover, #refresh:hover { color:var(--fg); }
+.tabs button.active, .range button.active { color:var(--fg); border-bottom-color:var(--accent); font-weight:500; }
+.range { display:flex; gap:12px; }
+select { border-bottom:1px solid var(--fg); padding:2px 16px 2px 0; border-radius:0; appearance:none;
+  background:linear-gradient(45deg,transparent 50%,var(--fg) 50%) right 4px center/5px 5px no-repeat; }
+select option { background:var(--bg); color:var(--fg); }
+.small { font-size:12px; color:var(--muted); flex-basis:100%; text-align:right; }
+
+/* Content */
+main { padding-top:40px; padding-bottom:80px; }
+.tab { display:none; } .tab.active { display:block; }
+.muted { color:var(--muted); }
+.lead { max-width:60ch; font-size:18px; line-height:1.4; margin:0 0 32px; }
+h3 { margin:0 0 16px; font-size:14px; font-weight:700; }
+.panel { border-top:2px solid var(--fg); padding-top:12px; margin-bottom:48px; }
+.panel canvas { max-height:300px; }
+.scroll { overflow-x:auto; }
+.grid-2-1 { display:grid; grid-template-columns:8fr 4fr; column-gap:24px; }
+
+/* Metrics: big numerals, no boxes */
+.cards { display:grid; grid-template-columns:repeat(4,1fr); column-gap:24px; margin-bottom:48px; }
+.card { border-top:2px solid var(--fg); padding-top:12px; display:flex; flex-direction:column; }
+.card .label { font-size:14px; font-weight:700; }
+.card .value { font-size:56px; line-height:1.1; font-weight:400; letter-spacing:-.04em; margin:16px 0 4px; }
+.card .sub { font-size:12px; color:var(--muted); }
+.card.bad .value { color:var(--accent); }
+
+/* Visual markers */
+.spark { display:block; margin-top:12px; height:28px; }
+.spark svg { width:100%; height:100%; display:block; }
+.mix { display:flex; width:120px; height:8px; background:var(--rule); }
+.mix span { display:block; height:100%; }
+
+/* Tables: hairlines only */
+table { width:100%; border-collapse:collapse; }
+th,td { text-align:left; padding:10px 24px 10px 0; border-bottom:1px solid var(--rule); white-space:nowrap; }
+th { font-size:12px; font-weight:500; color:var(--muted); }
+tbody tr:hover { background:color-mix(in srgb,var(--fg) 4%,transparent); }
+tbody tr.clickable { cursor:pointer; }
+tbody tr.selected td:first-child { box-shadow:inset 3px 0 0 var(--accent); padding-left:8px; }
+td.title { max-width:420px; overflow:hidden; text-overflow:ellipsis; }
+table select { border-bottom-color:var(--rule); }
+table button.reset { color:var(--accent); font-weight:500; }
+table button.reset:hover { text-decoration:underline; }
+
+/* Category badge: a square and a word */
+.badge { display:inline-flex; align-items:center; gap:8px; }
+.badge::before { content:""; width:8px; height:8px; background:var(--idle); }
+.badge.productive::before { background:var(--productive); }
+.badge.neutral::before { background:var(--neutral); }
+.badge.distracting::before { background:var(--distracting); }
+.score { font-weight:700; }
+.score.lo { color:var(--accent); } .score.hi { color:var(--productive); } .score.mid { color:var(--fg); }
+
+/* Timeline */
+.timeline { position:relative; height:48px; background:var(--rule); }
+.timeline .seg { position:absolute; top:0; height:100%; min-width:1px; }
+.timeline .seg:hover { opacity:.75; }
+.seg.productive { background:var(--productive); } .seg.neutral { background:var(--neutral); }
+.seg.distracting { background:var(--distracting); } .seg.idle { background:var(--idle); }
+.legend { display:flex; flex-wrap:wrap; gap:24px; margin:12px 0 24px; font-size:12px; color:var(--muted); }
+.sw { display:inline-block; width:8px; height:8px; margin-right:8px; }
+.sw.productive { background:var(--productive); } .sw.neutral { background:var(--neutral); }
+.sw.distracting { background:var(--distracting); } .sw.idle { background:var(--idle); }
+details summary { cursor:pointer; font-weight:500; }
+.formula { font-family:ui-monospace,Menlo,Consolas,monospace; border-left:2px solid var(--fg); padding-left:16px; }
+pre,code { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:13px; }
+pre { margin:0 0 16px; padding:16px 0; border-top:1px solid var(--rule); border-bottom:1px solid var(--rule); overflow-x:auto; }
+.empty { color:var(--muted); padding:48px 0; }
+
+@media (max-width:900px) {
+  .top, main { padding-left:20px; padding-right:20px; }
+  .top h1, .tabs, .controls { grid-column:1 / -1; }
+  .tabs { flex-wrap:wrap; } .controls { justify-content:flex-start; } .small { text-align:left; }
+  .cards { grid-template-columns:1fr 1fr; row-gap:24px; }
+  .grid-2-1 { grid-template-columns:1fr; }
+  .card .value { font-size:44px; }
+}
+@media (prefers-reduced-motion:reduce) { * { transition:none !important; } }

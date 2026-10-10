@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Focus Tracker</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap">
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+</head>
+<body>
+  <header class="top">
+    <h1>Focus Tracker</h1>
+    <nav class="tabs" aria-label="Sections">
+      <button data-tab="overview" class="active">Overview</button>
+      <button data-tab="sessions">Sessions</button>
+      <button data-tab="apps">Apps</button>
+      <button data-tab="settings">Focus mode</button>
+    </nav>
+    <div class="controls">
+      <select id="user" aria-label="User"></select>
+      <div class="range" id="range" role="group" aria-label="Range">
+        <button data-range="today">Today</button>
+        <button data-range="7d" class="active">7 days</button>
+        <button data-range="30d">30 days</button>
+        <button data-range="all">All</button>
+      </div>
+      <button id="refresh">Refresh</button>
+      <span class="small" id="status" role="status"></span>
+    </div>
+  </header>
+
+  <main>
+    <!-- Overview -->
+    <section id="tab-overview" class="tab active">
+      <div class="cards">
+        <div class="card"><span class="label">Tracked</span><span class="value" id="m-tracked">–</span><span class="sub">&nbsp;</span><span class="spark" id="s-tracked"></span></div>
+        <div class="card"><span class="label">Productive</span><span class="value" id="m-prod">–</span><span class="sub" id="m-prod-pct"></span><span class="spark" id="s-prod"></span></div>
+        <div class="card bad"><span class="label">Distracting</span><span class="value" id="m-dist">–</span><span class="sub" id="m-dist-pct"></span><span class="spark" id="s-dist"></span></div>
+        <div class="card"><span class="label">Focus score</span><span class="value" id="m-focus">–</span><span class="sub">out of 100</span><span class="spark" id="s-focus"></span></div>
+      </div>
+      <div class="grid-2-1">
+        <div class="panel"><h3>Minutes per day</h3><canvas id="chart-daily"></canvas></div>
+        <div class="panel"><h3>Time split</h3><canvas id="chart-pie"></canvas></div>
+      </div>
+      <div class="grid-2-1">
+        <div class="panel"><h3>Focus score per session</h3><canvas id="chart-trend"></canvas></div>
+        <div class="panel"><h3>Average score by start hour</h3><canvas id="chart-hour"></canvas></div>
+      </div>
+    </section>
+
+    <!-- Sessions -->
+    <section id="tab-sessions" class="tab">
+      <div class="panel scroll">
+        <table id="sessions-table">
+          <thead><tr>
+            <th>ID</th><th>Start (UTC)</th><th>Duration</th><th>Mix</th><th>Productive</th><th>Neutral</th>
+            <th>Distracting</th><th>Idle</th><th>Switches</th><th>Focus mode</th><th>Score</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="panel" id="session-detail" hidden>
+        <h3>Session <span id="detail-id"></span></h3>
+        <div class="timeline" id="timeline"></div>
+        <div class="legend">
+          <span><i class="sw productive"></i>Productive</span>
+          <span><i class="sw neutral"></i>Neutral</span>
+          <span><i class="sw distracting"></i>Distracting</span>
+          <span><i class="sw idle"></i>Idle</span>
+        </div>
+        <details>
+          <summary>How this score was computed</summary>
+          <p class="formula">Focus = 100 × T<sub>productive</sub> / (T<sub>session</sub> − T<sub>idle</sub>) × (1 − min(S / S<sub>max</sub>, 0.3))</p>
+          <p id="formula-values" class="muted"></p>
+        </details>
+      </div>
+    </section>
+
+    <!-- Apps -->
+    <section id="tab-apps" class="tab">
+      <div class="panel"><h3>Top apps by minutes</h3><canvas id="chart-apps"></canvas></div>
+      <div class="panel scroll">
+        <h3>Recent window titles</h3>
+        <table id="recent-table">
+          <thead><tr><th>Start (UTC)</th><th>Process</th><th>Window title</th><th>Category</th><th>Seconds</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Settings -->
+    <section id="tab-settings" class="tab">
+      <p class="lead">Apps marked <b>distracting</b> are blocked when the tracker runs with <code>--focus</code>. Changes are saved per user.</p>
+      <div class="panel scroll">
+        <table id="cat-table">
+          <thead><tr><th>Process</th><th>Default</th><th>Your category</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="panel">
+        <h3>Run focus mode</h3>
+        <pre id="focus-cmd"></pre>
+        <p>Blocked now: <span id="blocked-list" class="muted">none</span></p>
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
