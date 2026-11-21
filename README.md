@@ -46,7 +46,7 @@ Apps have a default category; each user can override it. Browser tabs are classi
 <td valign="top">
 
 ### 🎯 Focus Mode
-`--focus` minimises any app the user has marked distracting the moment it comes to the front (or closes it with `--terminate`). `--minutes 25` ends a timed focus session.
+Pick a length and press **Start focus** in the dashboard: any app on your block list is minimised the moment it comes to the front. Add or remove blocked apps right there. From the terminal: `--focus --minutes 25`.
 
 </td>
 </tr>
@@ -84,6 +84,7 @@ flowchart LR
 | **Threads & synchronisation** | `include/bounded_queue.h`, `src/async_writer.cpp`, `include/log.h` | Producer/consumer with a **bounded buffer**: one mutex for mutual exclusion and two condition variables. Producers block while the buffer is full (back-pressure), the consumer blocks while it is empty; neither busy-waits. `close()` lets the writer drain the queue on shutdown. A second mutex serialises use of the non-thread-safe `PGconn`, a third serialises console output (an early test run printed interleaved text from two threads). `std::atomic` shares the stop flag and the foreground PID. |
 | **Process management** | `src/process_monitor.cpp`, `src/focus_mode.cpp` | Enumerates processes with `CreateToolhelp32Snapshot`; reads parent PID, thread count, base priority and priority class, and working-set memory. Detects PID reuse by comparing process creation times. Focus Mode minimises or terminates processes (`TerminateProcess`). |
 | **CPU scheduling** | `src/process_monitor.cpp`, view `vw_foreground_vs_cpu` | CPU % = Δ(kernel + user time from `GetProcessTimes`) ÷ (wall time × logical CPUs). The view compares how long an app was **in front of you** with how much **CPU time it was scheduled for**: an editor in front for an hour can use seconds of CPU while a background app burns CPU unseen. |
+| **Inter-process communication** | `src/main.cpp`, `dashboard/focus_control.py` | Two **named kernel objects** link the dashboard and the tracker. A **named mutex** (`FocusOs.Running`) allows only one tracker at a time (a second one would count every second twice); Windows releases it even if the tracker crashes, so it can never go stale like a lock file. A **named event** (`FocusOs.Stop`) is how the dashboard's *End now* button (or `focus_tracker --stop`) asks the tracker to stop: the tracker's threads block on the event in the kernel and wake immediately, then shut down cleanly. |
 | **Signals / shutdown** | `src/main.cpp` | Console control handler for Ctrl+C *and* closing the window: it waits (up to Windows' ~5 s limit) until the queue is drained and the session closed. |
 
 Unit tests in `tracker/tests/` cover the session logic and stress the queue with 4 producer threads × 20 000 items through an 8-slot buffer (nothing lost or duplicated; producers wait thousands of times for space).
@@ -106,6 +107,29 @@ activity_log ──1:1── ai_predictions        title_training_samples
 - **Transactions**: batches of activity rows and process samples are inserted atomically; the classifier writes its labels and audit rows in one transaction.
 
 ## 🚀 Getting started
+
+### Quick start: no database to install
+
+1. Download the release zip (`FocusOs-<date>.zip`) and unzip it, for example into Documents.
+2. Install [Python 3.10+](https://www.python.org/downloads/) if you don't have it (tick *Add python.exe to PATH*).
+3. Double-click **`start.bat`**. The dashboard opens in your browser.
+
+The first start installs the dashboard's Python packages and creates **your own private PostgreSQL database** in `%LOCALAPPDATA%\FocusOs\pgdata`. FocusOs runs it itself from the bundled `pgsql\` folder: no PostgreSQL installation, no admin rights, no Windows service. It listens only on `127.0.0.1:5544`, so it never clashes with another PostgreSQL. `stop.bat` ends a running focus session and stops the database.
+
+> Unzip somewhere normal (Documents, Downloads). Some antivirus programs remove batch files that run from the Temp folder.
+
+### Making a release (for you)
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\get_portable_postgres.ps1   # copies a minimal PostgreSQL into pgsql\ (~70 MB)
+powershell -ExecutionPolicy Bypass -File scripts\make_release.ps1            # dist\FocusOs-<date>.zip (~32 MB)
+```
+
+The zip holds the project files, `pgsql\` and the built tracker. `config.ini`, passwords and your data are never included.
+
+### Developer setup with an installed PostgreSQL
+
+`tracker\config.ini` chooses the database: `mode = portable` (FocusOs runs its own) or `mode = server` (the settings in that file, e.g. an installed PostgreSQL). With no `config.ini`, FocusOs uses portable mode.
 
 > **Requirements:** Windows 10/11 · PostgreSQL 14+ · CMake ≥ 3.20 · MinGW-w64 GCC or Visual Studio (C++17) · Python 3.10+
 
@@ -155,6 +179,7 @@ focus_tracker [options]
   --focus            enable Focus Mode (block 'distracting' apps)
   --block <exe>      extra process to block (repeatable)
   --terminate        kill blocked apps instead of minimising
+  --stop             ask the running tracker to stop cleanly, then exit
 ```
 
 </details>
@@ -167,6 +192,8 @@ cd tracker\dashboard
 pip install -r requirements.txt
 python server.py        # http://127.0.0.1:8000
 ```
+
+**Focus mode tab:** press **Add apps** to choose from the apps installed on this PC (Start menu apps and Microsoft Store apps, found by `dashboard/list_installed_apps.ps1`; Windows' own tools are left out), remove one with ×, then pick 15, 25, 50 or 90 minutes and press **Start focus**. Only installed apps can be added. The dashboard starts the tracker in the background with `--focus --minutes N` and shows a countdown; **End now** stops it cleanly. Write requests only accept JSON from the dashboard's own page, so other websites cannot start sessions or change your block list.
 
 </details>
 

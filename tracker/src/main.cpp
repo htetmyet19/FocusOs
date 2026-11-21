@@ -70,11 +70,56 @@ void signalShutdownDone() {
 #endif
 }
 
-// Sleep in small steps so Ctrl+C / close is noticed quickly.
+// ---- inter-process control (OS: IPC + mutual exclusion between processes) ---
+// Named kernel objects, visible to every process in the user's session:
+//   FocusOs.Running  named mutex: only one tracker may run at a time, or every
+//                    second would be counted twice. Windows releases it even
+//                    if the tracker crashes, so it can never go stale (unlike
+//                    a lock file).
+//   FocusOs.Stop     named manual-reset event: the dashboard (or
+//                    `focus_tracker --stop`) sets it to ask the running
+//                    tracker to shut down cleanly.
+#ifdef _WIN32
+constexpr wchar_t kRunningMutexName[] = L"Local\\FocusOs.Running";
+constexpr wchar_t kStopEventName[]    = L"Local\\FocusOs.Stop";
+HANDLE g_runningMutex = nullptr;
+HANDLE g_stopEvent    = nullptr;
+#endif
+
+// Sleep until the time is up, Ctrl+C is pressed, or the stop event is set.
+// Waiting on the event blocks in the kernel: no busy polling, and a stop
+// request wakes the thread immediately.
 void interruptibleSleep(std::chrono::duration<double> d) {
     const auto deadline = std::chrono::steady_clock::now() + d;
-    while (g_running && std::chrono::steady_clock::now() < deadline)
+    while (g_running && std::chrono::steady_clock::now() < deadline) {
+#ifdef _WIN32
+        if (g_stopEvent && WaitForSingleObject(g_stopEvent, 50) == WAIT_OBJECT_0) {
+            g_running = false;
+            break;
+        }
+        if (!g_stopEvent) std::this_thread::sleep_for(std::chrono::milliseconds(50));
+#else
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
+#endif
+    }
+}
+
+// `focus_tracker --stop`: ask a running tracker to stop. Returns an exit code.
+int requestStop() {
+#ifdef _WIN32
+    HANDLE ev = OpenEventW(EVENT_MODIFY_STATE, FALSE, kStopEventName);
+    if (!ev) {
+        std::cout << "No tracker is running.\n";
+        return 1;
+    }
+    SetEvent(ev);
+    CloseHandle(ev);
+    std::cout << "Asked the running tracker to stop.\n";
+    return 0;
+#else
+    std::cout << "--stop is only supported on Windows.\n";
+    return 1;
+#endif
 }
 
 struct Options {
@@ -102,7 +147,8 @@ void usage() {
         "  --minutes <n>      stop by itself after n minutes, e.g. 25 (default: until Ctrl+C)\n"
         "  --focus            enable Focus Mode (block 'distracting' apps)\n"
         "  --block <exe>      extra process to block (repeatable)\n"
-        "  --terminate        kill blocked apps instead of minimising\n";
+        "  --terminate        kill blocked apps instead of minimising\n"
+        "  --stop             ask the running tracker to stop cleanly, then exit\n";
 }
 
 Options parse(int argc, char** argv) {
@@ -123,6 +169,7 @@ Options parse(int argc, char** argv) {
         else if (a == "--focus")     o.focusMode  = true;
         else if (a == "--terminate") o.terminate  = true;
         else if (a == "--block")     o.extraBlock.insert(next());
+        else if (a == "--stop")      std::exit(requestStop());
         else { usage(); std::exit(a == "--help" ? 0 : 1); }
     }
     return o;
@@ -154,6 +201,17 @@ int main(int argc, char** argv) {
         return 1;
     }
 #ifdef _WIN32
+    // Single instance: if the named mutex already exists, another tracker owns it.
+    g_runningMutex = CreateMutexW(nullptr, TRUE, kRunningMutexName);
+    if (g_runningMutex && GetLastError() == ERROR_ALREADY_EXISTS) {
+        std::cerr << "The tracker is already running. Stop it first (focus_tracker --stop).\n";
+        CloseHandle(g_runningMutex);
+        return 2;
+    }
+    // Manual-reset so both the main thread and the process thread see it.
+    g_stopEvent = CreateEventW(nullptr, TRUE, FALSE, kStopEventName);
+    if (g_stopEvent) ResetEvent(g_stopEvent);
+
     g_shutdownDone = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     SetConsoleCtrlHandler(onConsoleEvent, TRUE);
     SetConsoleOutputCP(CP_UTF8);   // titles are UTF-8; print them correctly

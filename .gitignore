@@ -9,3 +9,7 @@ build/
 build-vs/
 # Trained model (rebuild with: python ai/title_classifier.py train)
 *.joblib
+
+# Portable PostgreSQL (built by scripts/get_portable_postgres.ps1) and release output
+pgsql/
+dist/

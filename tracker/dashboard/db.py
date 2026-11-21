@@ -19,11 +19,31 @@ VALID_LABELS = ("productive", "neutral", "distracting")
 DEFAULT_CONFIG = Path(__file__).resolve().parents[1] / "config.ini"
 
 
-def connection_params() -> dict:
+def _config_section():
     path = Path(os.environ.get("FOCUS_CONFIG", DEFAULT_CONFIG))
     parser = configparser.ConfigParser()
-    parser.read(path)   # a missing file just means "use the defaults"
-    section = parser["database"] if parser.has_section("database") else {}
+    found = bool(parser.read(path))
+    return found, (parser["database"] if parser.has_section("database") else {})
+
+
+def mode() -> str:
+    """'portable' (FocusOs runs its own PostgreSQL) or 'server' (an installed one).
+
+    No config.ini, as in a fresh download: portable. An existing config.ini
+    without a mode line: server, so older setups keep working.
+    """
+    found, section = _config_section()
+    if not found:
+        return "portable"
+    return str(section.get("mode", "server")).strip().lower()
+
+
+def connection_params() -> dict:
+    if mode() == "portable":
+        import portable_db
+        return {**portable_db.connection_params(), "connect_timeout": 5,
+                "application_name": "focus_dashboard"}
+    _, section = _config_section()
     params = {
         "host": section.get("host", "localhost"),
         "port": int(section.get("port", 5432)),
@@ -151,6 +171,66 @@ def clear_override(user_id: int, app_id: int) -> None:
             "DELETE FROM user_app_category WHERE user_id = %s AND app_id = %s",
             (user_id, app_id),
         )
+
+
+PROCESS_NAME_RE = r"^[a-z0-9][a-z0-9 ._()+-]{0,250}\.exe$"
+
+
+def normalise_process_name(name: str) -> str:
+    """'Instagram' -> 'instagram.exe'; rejects anything that isn't a plain file name."""
+    import re
+    clean = (name or "").strip().lower()
+    if "/" in clean or "\\" in clean:
+        raise ValueError("Enter just the app's file name (no folders), for example discord.exe")
+    if clean and not clean.endswith(".exe"):
+        clean += ".exe"
+    if not re.match(PROCESS_NAME_RE, clean):
+        raise ValueError("Enter an app's file name, for example discord.exe")
+    return clean
+
+
+def block_app(user_id: int, process_name: str) -> dict:
+    """Mark an app distracting for this user, adding it to applications if it's new."""
+    name = normalise_process_name(process_name)
+    with _connect() as conn:
+        app_id = conn.execute(
+            "INSERT INTO applications (process_name) VALUES (%s) "
+            "ON CONFLICT (process_name) DO UPDATE SET process_name = EXCLUDED.process_name "
+            "RETURNING app_id",
+            (name,),
+        ).fetchone()[0]
+        conn.execute(
+            """
+            INSERT INTO user_app_category (user_id, app_id, category_id)
+            VALUES (%s, %s, (SELECT category_id FROM categories WHERE label = 'distracting'))
+            ON CONFLICT (user_id, app_id) DO UPDATE SET category_id = EXCLUDED.category_id
+            """,
+            (user_id, app_id),
+        )
+    return {"app_id": app_id, "process_name": name}
+
+
+def unblock_app(user_id: int, app_id: int) -> None:
+    """Stop blocking an app: drop the override, or set neutral if its default is distracting."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT c.label FROM applications a JOIN categories c ON c.category_id = a.default_category "
+            "WHERE a.app_id = %s", (app_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError("Unknown app")
+        if row[0] == "distracting":
+            conn.execute(
+                """
+                INSERT INTO user_app_category (user_id, app_id, category_id)
+                VALUES (%s, %s, (SELECT category_id FROM categories WHERE label = 'neutral'))
+                ON CONFLICT (user_id, app_id) DO UPDATE SET category_id = EXCLUDED.category_id
+                """,
+                (user_id, app_id),
+            )
+        else:
+            conn.execute("DELETE FROM user_app_category WHERE user_id = %s AND app_id = %s",
+                         (user_id, app_id))
 
 
 def process_usage(user_id: int, since=None) -> dict:
