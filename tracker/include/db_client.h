@@ -21,6 +21,9 @@ public:
     virtual void         insertActivity(const std::vector<ActivityRecord>& rows)          = 0;
     virtual void         insertIdle(const IdlePeriod& period)                             = 0;
     virtual void         insertProcessSamples(const std::vector<ProcessSample>& rows)     = 0;
+    virtual void         insertFocusBlock(const FocusBlock& block)                        = 0;
+    virtual void         updateLive(const LiveStatus& status)                             = 0;
+    virtual void         clearLive(std::int64_t sessionId)                                = 0;
     // Effective category == 'distracting' (user override, else app default).
     virtual std::set<std::string> distractingApps(std::int64_t userId)                    = 0;
 };
@@ -44,6 +47,8 @@ public:
     PgDbClient& operator=(const PgDbClient&) = delete;
 
     void reconnect();
+    // Planned length of a timed session; call before the writer thread starts.
+    void setPlannedMinutes(std::int64_t sessionId, int minutes);
 
     void         ensureUser(std::int64_t userId, const std::string& name) override;
     std::int64_t openSession(std::int64_t userId, TimePoint start, bool focusMode) override;
@@ -51,6 +56,9 @@ public:
     void         insertActivity(const std::vector<ActivityRecord>& rows) override;
     void         insertIdle(const IdlePeriod& period) override;
     void         insertProcessSamples(const std::vector<ProcessSample>& rows) override;
+    void         insertFocusBlock(const FocusBlock& block) override;
+    void         updateLive(const LiveStatus& status) override;
+    void         clearLive(std::int64_t sessionId) override;
     std::set<std::string> distractingApps(std::int64_t userId) override;
 
 private:

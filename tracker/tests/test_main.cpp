@@ -44,6 +44,11 @@ struct FakeDb : IDbClient {
     }
     void insertIdle(const IdlePeriod& p) override { idle.push_back(p); }
     void insertProcessSamples(const std::vector<ProcessSample>&) override {}
+    void insertFocusBlock(const FocusBlock&) override {}
+    std::vector<LiveStatus> live;
+    bool liveCleared = false;
+    void updateLive(const LiveStatus& s) override { live.push_back(s); }
+    void clearLive(std::int64_t) override { liveCleared = true; }
     std::set<std::string> distractingApps(std::int64_t) override { return {}; }
 };
 
@@ -180,6 +185,23 @@ void test_stop_closes_session() {
     CHECK(sm.pendingRows() == 0);
 }
 
+void test_live_status() {
+    std::cout << "live status: the open window is published every 5 s and cleared at stop\n";
+    FakeDb db;
+    SessionManager::Config c = cfg(2.0);
+    c.liveIntervalSec = 5.0;
+    SessionManager sm(db, 1, false, c);
+    sm.start(at(0));
+    run(sm, 0, 20, [](int) { return win("code.exe", "main.cpp"); });
+    // samples at t = 0..19 -> published at 0, 5, 10, 15
+    CHECK(db.live.size() == 4);
+    CHECK(db.live.back().processName == "code.exe");
+    CHECK(std::abs(rel(db.live.back().since) - 0) < 1e-6);    // still the same open window
+    CHECK(db.activity.empty());                              // nothing closed yet: that's why live exists
+    sm.stop(at(20));
+    CHECK(db.liveCleared);
+}
+
 void test_queue_many_producers() {
     std::cout << "BoundedQueue: 4 producers x 20000 items, capacity 8, 1 consumer\n";
     constexpr int kProducers = 4, kItems = 20000;
@@ -235,6 +257,7 @@ int main() {
     test_title_change_is_a_new_activity();
     test_idle_period();
     test_stop_closes_session();
+    test_live_status();
     test_queue_many_producers();
     test_queue_close_wakes_consumer();
 

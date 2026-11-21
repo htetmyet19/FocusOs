@@ -22,6 +22,7 @@ find_package(Threads REQUIRED)
 
 add_executable(focus_tracker
     src/main.cpp
+    src/notifier.cpp
     src/async_writer.cpp
     src/focus_mode.cpp
     src/idle_detector.cpp
@@ -37,7 +38,7 @@ target_link_libraries(focus_tracker PRIVATE "${PG_LIBRARY}" Threads::Threads)
 
 if(WIN32)
     target_compile_definitions(focus_tracker PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
-    target_link_libraries(focus_tracker PRIVATE user32 psapi)
+    target_link_libraries(focus_tracker PRIVATE user32 psapi shell32)
 endif()
 
 if(MINGW)

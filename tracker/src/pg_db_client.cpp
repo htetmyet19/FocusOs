@@ -174,6 +174,34 @@ void PgDbClient::insertProcessSamples(const std::vector<ProcessSample>& rows) {
     });
 }
 
+void PgDbClient::setPlannedMinutes(std::int64_t sessionId, int minutes) {
+    command(conn_, "UPDATE sessions SET planned_minutes = $2::int WHERE session_id = $1::bigint",
+            {std::to_string(sessionId), std::to_string(minutes)});
+}
+
+void PgDbClient::insertFocusBlock(const FocusBlock& b) {
+    command(conn_,
+            "INSERT INTO focus_blocks (session_id, blocked_at, app_id, action) "
+            "VALUES ($1::bigint, $2::timestamptz, $3::bigint, $4)",
+            {std::to_string(b.sessionId), ts(b.at), std::to_string(getOrCreateApp(b.processName)), b.action});
+}
+
+void PgDbClient::updateLive(const LiveStatus& s) {
+    const std::string app = s.processName.empty() ? "" : std::to_string(getOrCreateApp(s.processName));
+    std::vector<std::string> params = {std::to_string(s.sessionId), app, s.windowTitle, ts(s.since),
+                                       s.idle ? "true" : "false", ts(s.updatedAt)};
+    command(conn_,
+            "INSERT INTO session_live (session_id, app_id, window_title, current_since, is_idle, updated_at) "
+            "VALUES ($1::bigint, NULLIF($2, '')::bigint, $3, $4::timestamptz, $5::boolean, $6::timestamptz) "
+            "ON CONFLICT (session_id) DO UPDATE SET app_id = EXCLUDED.app_id, window_title = EXCLUDED.window_title, "
+            "current_since = EXCLUDED.current_since, is_idle = EXCLUDED.is_idle, updated_at = EXCLUDED.updated_at",
+            params);
+}
+
+void PgDbClient::clearLive(std::int64_t sessionId) {
+    command(conn_, "DELETE FROM session_live WHERE session_id = $1::bigint", {std::to_string(sessionId)});
+}
+
 std::set<std::string> PgDbClient::distractingApps(std::int64_t userId) {
     auto res = query(conn_,
                      "SELECT a.process_name FROM applications a "

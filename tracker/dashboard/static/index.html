@@ -9,6 +9,13 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Figtree:wght@400;500;600;700&display=swap">
   <link rel="stylesheet" href="styles.css">
+  <script>
+    // Theme preview: ?theme=glass loads the glass theme on top of the default.
+    if (new URLSearchParams(location.search).get("theme") === "glass") {
+      document.documentElement.dataset.style = "glass";
+      document.write('<link rel="stylesheet" href="theme-glass.css">');
+    }
+  </script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"
           integrity="sha384-9nhczxUqK87bcKHh20fSQcTGD4qq5GhayNYSYWqwBkINBhOfQLg/P5HG5lF1urn4"
           crossorigin="anonymous"></script>
@@ -231,6 +238,11 @@
             <button role="radio" data-min="50" aria-checked="false">50 min</button>
             <button role="radio" data-min="90" aria-checked="false">90 min</button>
           </div>
+          <div class="on-block" role="radiogroup" aria-labelledby="on-block-label">
+            <span id="on-block-label">When a blocked app opens:</span>
+            <button role="radio" data-action="close" aria-checked="true" class="active">Close it</button>
+            <button role="radio" data-action="minimise" aria-checked="false">Minimise it</button>
+          </div>
           <button class="btn-focus" id="focus-start">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l11-6.5z"/></svg>
             <span>Start focus</span>
@@ -243,9 +255,69 @@
           <p class="focus-heading">Focusing</p>
           <p class="countdown" id="countdown" aria-live="polite">25:00</p>
           <div class="live-bar"><span id="live-bar-fill"></span></div>
+          <div class="live-stats" id="live-stats" aria-live="polite">
+            <div><span class="ls-value" id="ls-prod">0 min</span><span class="ls-label">productive</span></div>
+            <div><span class="ls-value" id="ls-dist">0 min</span><span class="ls-label">distracted</span></div>
+            <div><span class="ls-value" id="ls-blocks">0</span><span class="ls-label">apps blocked</span></div>
+            <div class="ls-now"><span class="ls-value" id="ls-now">Starting…</span><span class="ls-label">last app</span></div>
+          </div>
+          <div class="timeline live-timeline" id="live-timeline" aria-hidden="true"></div>
+          <div class="live-lists">
+            <div class="live-list">
+              <h3>Apps in this session</h3>
+              <ul id="live-apps" aria-live="polite"><li class="ll-empty">Waiting for the first app…</li></ul>
+            </div>
+            <div class="live-list">
+              <h3>Blocked attempts</h3>
+              <ul id="live-blocked" aria-live="polite"><li class="ll-empty">None so far.</li></ul>
+            </div>
+          </div>
           <button class="btn-end" id="focus-stop">End now</button>
           <p class="focus-note" id="live-note">Changes to blocked apps apply to your next session.</p>
         </div>
+      </section>
+
+      <!-- Summary of the latest (or selected) focus session -->
+      <section class="card focus-summary" id="focus-summary" hidden>
+        <div class="card-head">
+          <h2 class="card-title" id="fs-title">Last focus session</h2>
+          <span class="outcome" id="fs-outcome"></span>
+        </div>
+        <p class="muted fs-when" id="fs-when"></p>
+        <div class="fs-stats">
+          <div class="fs-stat"><span class="fs-value" id="fs-score">–</span><span class="fs-label">focus score</span></div>
+          <div class="fs-stat"><span class="fs-value" id="fs-length">–</span><span class="fs-label">length</span></div>
+          <div class="fs-stat"><span class="fs-value is-productive" id="fs-prod">–</span><span class="fs-label">productive</span></div>
+          <div class="fs-stat"><span class="fs-value is-distracting" id="fs-dist">–</span><span class="fs-label">distracted</span></div>
+          <div class="fs-stat"><span class="fs-value" id="fs-blocks">–</span><span class="fs-label">apps blocked</span></div>
+          <div class="fs-stat"><span class="fs-value" id="fs-switches">–</span><span class="fs-label">app switches</span></div>
+        </div>
+        <div class="timeline" id="fs-timeline"></div>
+        <div class="legend">
+          <span><i class="sw productive"></i>Productive</span>
+          <span><i class="sw neutral"></i>Neutral</span>
+          <span><i class="sw distracting"></i>Distracting</span>
+          <span><i class="sw idle"></i>Idle</span>
+        </div>
+        <div class="fs-columns">
+          <div>
+            <h3 class="fs-sub">Apps you used</h3>
+            <ul class="fs-list" id="fs-apps"></ul>
+          </div>
+          <div>
+            <h3 class="fs-sub">Blocked attempts</h3>
+            <ul class="fs-list" id="fs-blocked"></ul>
+          </div>
+        </div>
+      </section>
+
+      <!-- Focus history -->
+      <section class="card flush scroll" id="focus-history-card" hidden>
+        <h2 class="card-title pad">Focus history</h2>
+        <table id="focus-history">
+          <thead><tr><th>Started</th><th class="num">Length</th><th>Result</th><th class="num">Productive</th><th class="num">Blocked</th><th class="num">Score</th></tr></thead>
+          <tbody></tbody>
+        </table>
       </section>
 
       <!-- Blocked apps -->

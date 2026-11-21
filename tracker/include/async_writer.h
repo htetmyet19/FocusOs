@@ -41,6 +41,9 @@ public:
     void insertActivity(const std::vector<ActivityRecord>& rows) override;
     void insertIdle(const IdlePeriod& period) override;
     void insertProcessSamples(const std::vector<ProcessSample>& rows) override;
+    void insertFocusBlock(const FocusBlock& block) override;
+    void updateLive(const LiveStatus& status) override;
+    void clearLive(std::int64_t sessionId) override;
 
     struct Stats {
         std::uint64_t commandsWritten = 0;
@@ -54,8 +57,10 @@ public:
 
 private:
     struct CloseSessionCmd { std::int64_t sessionId; TimePoint end; };
+    struct ClearLiveCmd    { std::int64_t sessionId; };
     using Command = std::variant<std::vector<ActivityRecord>, IdlePeriod,
-                                 std::vector<ProcessSample>, CloseSessionCmd>;
+                                 std::vector<ProcessSample>, CloseSessionCmd, FocusBlock,
+                                 LiveStatus, ClearLiveCmd>;
 
     void enqueue(Command cmd);
     void writerLoop();
