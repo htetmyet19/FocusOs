@@ -2,70 +2,165 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Focus Tracker</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>FocusOs</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='12' fill='none' stroke='%23E4DEFF' stroke-width='6'/%3E%3Cpath d='M16 4a12 12 0 0 1 11.4 15.7' fill='none' stroke='%236C4CF5' stroke-width='6' stroke-linecap='round'/%3E%3C/svg%3E">
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Figtree:wght@400;500;600;700&display=swap">
   <link rel="stylesheet" href="styles.css">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"
           integrity="sha384-9nhczxUqK87bcKHh20fSQcTGD4qq5GhayNYSYWqwBkINBhOfQLg/P5HG5lF1urn4"
           crossorigin="anonymous"></script>
 </head>
 <body>
-  <header class="top">
-    <h1>Focus Tracker</h1>
+  <header class="topbar">
+    <div class="brand">
+      <svg viewBox="0 0 32 32" aria-hidden="true" class="brand-mark">
+        <circle cx="16" cy="16" r="12" class="bm-track"/>
+        <path d="M16 4a12 12 0 0 1 11.4 15.7" class="bm-arc"/>
+      </svg>
+      <span>FocusOs</span>
+    </div>
+
     <nav class="tabs" aria-label="Sections">
-      <button data-tab="overview" class="active">Overview</button>
-      <button data-tab="sessions">Sessions</button>
-      <button data-tab="apps">Apps</button>
-      <button data-tab="processes">Processes</button>
-      <button data-tab="settings">Focus mode</button>
+      <button data-tab="overview" class="active">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/></svg>
+        <span>Today</span>
+      </button>
+      <button data-tab="sessions">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="15" rx="3"/><path d="M8 3v4M16 3v4M4 10h16"/></svg>
+        <span>Sessions</span>
+      </button>
+      <button data-tab="apps">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="7" height="7" rx="2"/><rect x="13" y="4" width="7" height="7" rx="2"/><rect x="4" y="13" width="7" height="7" rx="2"/><rect x="13" y="13" width="7" height="7" rx="2"/></svg>
+        <span>Apps</span>
+      </button>
+      <button data-tab="processes">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/></svg>
+        <span>Processes</span>
+      </button>
+      <button data-tab="settings">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 3v5c0 4.5-3 8.3-7 10-4-1.7-7-5.5-7-10V6l7-3z"/></svg>
+        <span>Focus mode</span>
+      </button>
     </nav>
-    <div class="controls">
-      <select id="user" aria-label="User"></select>
-      <div class="range" id="range" role="group" aria-label="Range">
+
+    <div class="top-controls">
+      <div class="range" id="range" role="group" aria-label="Time range">
         <button data-range="today">Today</button>
         <button data-range="7d" class="active">7 days</button>
         <button data-range="30d">30 days</button>
         <button data-range="all">All</button>
       </div>
-      <button id="refresh">Refresh</button>
-      <span class="small" id="status" role="status"></span>
+      <label class="user-pick">
+        <span class="visually-hidden">User</span>
+        <select id="user"></select>
+      </label>
+      <button id="refresh" class="icon-btn" title="Refresh" aria-label="Refresh">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg>
+      </button>
     </div>
   </header>
 
   <main>
-    <!-- Overview -->
-    <section id="tab-overview" class="tab active">
-      <div class="cards">
-        <div class="card"><span class="label">Tracked</span><span class="value" id="m-tracked">–</span><span class="sub">&nbsp;</span><span class="spark" id="s-tracked"></span></div>
-        <div class="card"><span class="label">Productive</span><span class="value" id="m-prod">–</span><span class="sub" id="m-prod-pct"></span><span class="spark" id="s-prod"></span></div>
-        <div class="card bad"><span class="label">Distracting</span><span class="value" id="m-dist">–</span><span class="sub" id="m-dist-pct"></span><span class="spark" id="s-dist"></span></div>
-        <div class="card"><span class="label">Focus score</span><span class="value" id="m-focus">–</span><span class="sub">out of 100</span><span class="spark" id="s-focus"></span></div>
+    <!-- Today / overview -->
+    <section id="tab-overview" class="tab active" aria-labelledby="greeting">
+      <div class="today">
+        <div class="today-text">
+          <p class="greeting" id="greeting">Hello</p>
+          <h1 id="today-title" class="today-title">Let's see how today is going.</h1>
+          <div class="chips">
+            <span class="chip chip-streak" id="streak">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2c1 3.5 5 5.5 5 10.5A5 5 0 0 1 7 13c0-2 1-3.5 2-4.5.2 1.6 1 2.8 2.2 3.3C10.8 8.6 11 5 12 2z"/></svg>
+              <span id="streak-text">No streak yet</span>
+            </span>
+            <span class="chip" id="today-dist">0 min distracted today</span>
+            <button class="chip chip-focus" id="today-focus">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l11-6.5z"/></svg>
+              <span id="today-focus-text">Start focus</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="goal">
+          <div class="ring-wrap">
+            <svg class="ring" viewBox="0 0 200 200" aria-hidden="true">
+              <circle class="ring-track" cx="100" cy="100" r="84"/>
+              <circle class="ring-fill" id="ring-fill" cx="100" cy="100" r="84"/>
+            </svg>
+            <div class="ring-center">
+              <span class="ring-value" id="ring-value">0 min</span>
+              <span class="ring-label" id="ring-label">of 3 h goal</span>
+            </div>
+          </div>
+          <div class="goal-edit" role="group" aria-label="Daily goal">
+            <button id="goal-minus" class="step" aria-label="Lower daily goal">−</button>
+            <span id="goal-text">Goal 3 h</span>
+            <button id="goal-plus" class="step" aria-label="Raise daily goal">+</button>
+          </div>
+        </div>
       </div>
-      <div class="grid-2-1">
-        <div class="panel"><h3>Minutes per day</h3><canvas id="chart-daily"></canvas></div>
-        <div class="panel"><h3>Time split</h3><canvas id="chart-pie"></canvas></div>
+
+      <h2 class="range-title" id="range-title">Your last 7 days</h2>
+
+      <div class="tiles">
+        <div class="tile tile-focus">
+          <span class="tile-label">Focus score</span>
+          <span class="tile-value" id="m-focus">–</span>
+          <span class="tile-sub">avg per session, out of 100</span>
+          <span class="spark" id="s-focus"></span>
+        </div>
+        <div class="tile tile-tracked">
+          <span class="tile-label">Tracked</span>
+          <span class="tile-value" id="m-tracked">–</span>
+          <span class="tile-sub" id="m-sessions">&nbsp;</span>
+          <span class="spark" id="s-tracked"></span>
+        </div>
+        <div class="tile tile-prod">
+          <span class="tile-label">Productive</span>
+          <span class="tile-value" id="m-prod">–</span>
+          <span class="tile-sub" id="m-prod-pct">&nbsp;</span>
+          <span class="spark" id="s-prod"></span>
+        </div>
+        <div class="tile tile-dist">
+          <span class="tile-label">Distracting</span>
+          <span class="tile-value" id="m-dist">–</span>
+          <span class="tile-sub" id="m-dist-pct">&nbsp;</span>
+          <span class="spark" id="s-dist"></span>
+        </div>
       </div>
-      <div class="grid-2-1">
-        <div class="panel"><h3>Focus score per session</h3><canvas id="chart-trend"></canvas></div>
-        <div class="panel"><h3>Average score by start hour</h3><canvas id="chart-hour"></canvas></div>
+
+      <section class="card">
+        <h2 id="hero-title" class="card-title">Where your time went</h2>
+        <div class="ribbon" id="ribbon" aria-hidden="true"></div>
+        <ul class="ribbon-legend" id="ribbon-legend"></ul>
+      </section>
+
+      <div class="grid grid-wide">
+        <section class="card"><h2 class="card-title">Minutes per day</h2><div class="chart-box"><canvas id="chart-daily"></canvas></div></section>
+        <section class="card"><h2 class="card-title">Best hours to focus</h2><div class="chart-box"><canvas id="chart-hour"></canvas></div></section>
       </div>
+      <section class="card"><h2 class="card-title">Focus score per session</h2><div class="chart-box short"><canvas id="chart-trend"></canvas></div></section>
     </section>
 
     <!-- Sessions -->
-    <section id="tab-sessions" class="tab">
-      <div class="panel scroll">
+    <section id="tab-sessions" class="tab" aria-labelledby="h-sessions">
+      <header class="page-head">
+        <h1 id="h-sessions">Sessions</h1>
+        <p>Every time you run the tracker is one session. Tap a session to replay it.</p>
+      </header>
+      <section class="card flush scroll">
         <table id="sessions-table">
           <thead><tr>
-            <th>ID</th><th>Start (UTC)</th><th>Duration</th><th>Mix</th><th>Productive</th><th>Neutral</th>
-            <th>Distracting</th><th>Idle</th><th>Switches</th><th>Focus mode</th><th>Score</th>
+            <th>ID</th><th>Started (UTC)</th><th>Duration</th><th>Mix</th><th class="num">Productive</th><th class="num">Neutral</th>
+            <th class="num">Distracting</th><th class="num">Idle</th><th class="num">Switches</th><th>Focus mode</th><th class="num">Score</th>
           </tr></thead>
           <tbody></tbody>
         </table>
-      </div>
-      <div class="panel" id="session-detail" hidden>
-        <h3>Session <span id="detail-id"></span></h3>
+      </section>
+      <section class="card" id="session-detail" hidden>
+        <h2 class="card-title">Session <span id="detail-id"></span></h2>
         <div class="timeline" id="timeline"></div>
         <div class="legend">
           <span><i class="sw productive"></i>Productive</span>
@@ -74,60 +169,135 @@
           <span><i class="sw idle"></i>Idle</span>
         </div>
         <details>
-          <summary>How this score was computed</summary>
+          <summary>How is the score calculated?</summary>
           <p class="formula">Focus = 100 × T<sub>productive</sub> / (T<sub>session</sub> − T<sub>idle</sub>) × (1 − min(S / S<sub>max</sub>, 0.3))</p>
           <p id="formula-values" class="muted"></p>
         </details>
-      </div>
+      </section>
     </section>
 
     <!-- Apps -->
-    <section id="tab-apps" class="tab">
-      <div class="panel"><h3>Top apps by minutes</h3><canvas id="chart-apps"></canvas></div>
-      <div class="panel scroll">
-        <h3>Recent window titles</h3>
+    <section id="tab-apps" class="tab" aria-labelledby="h-apps">
+      <header class="page-head">
+        <h1 id="h-apps">Apps</h1>
+        <p>The apps you spent the most time in, and the windows you had open.</p>
+      </header>
+      <section class="card"><h2 class="card-title">Top apps</h2><div class="chart-box tall"><canvas id="chart-apps"></canvas></div></section>
+      <section class="card flush scroll">
+        <h2 class="card-title pad">Recent windows</h2>
         <table id="recent-table">
-          <thead><tr><th>Start (UTC)</th><th>Process</th><th>Window title</th><th>Category</th><th>Seconds</th></tr></thead>
+          <thead><tr><th>Started (UTC)</th><th>App</th><th>Window title</th><th>Category</th><th class="num">Seconds</th></tr></thead>
           <tbody></tbody>
         </table>
-      </div>
+      </section>
     </section>
 
     <!-- Processes (OS: process management + CPU scheduling) -->
-    <section id="tab-processes" class="tab">
-      <p class="lead">Being in front of you is not the same as being run by the CPU. These numbers come from snapshots of every process (<code>--proc</code>) using the CPU time the scheduler actually gave each one.</p>
-      <div class="panel"><h3>Background CPU use (not in front)</h3><canvas id="chart-bg-cpu"></canvas></div>
-      <div class="panel scroll">
-        <h3>Foreground time vs CPU time</h3>
+    <section id="tab-processes" class="tab" aria-labelledby="h-procs">
+      <header class="page-head">
+        <h1 id="h-procs">Processes</h1>
+        <p>An app in front of you isn't always the one using your CPU. These numbers come from snapshots of every running process and the CPU time the scheduler gave each one.</p>
+      </header>
+      <section class="card"><h2 class="card-title">CPU used in the background</h2><div class="chart-box"><canvas id="chart-bg-cpu"></canvas></div></section>
+      <section class="card flush scroll">
+        <h2 class="card-title pad">Time in front vs CPU time</h2>
         <table id="fgcpu-table">
-          <thead><tr><th>Process</th><th>In front (min)</th><th>CPU (s)</th><th>CPU s per minute in front</th><th>Peak CPU %</th><th>Peak memory</th></tr></thead>
+          <thead><tr><th>Process</th><th class="num">In front (min)</th><th class="num">CPU (s)</th><th class="num">CPU s per minute in front</th><th class="num">Peak CPU %</th><th class="num">Peak memory</th></tr></thead>
           <tbody></tbody>
         </table>
-      </div>
-      <div class="panel scroll">
-        <h3>Background processes</h3>
+      </section>
+      <section class="card flush scroll">
+        <h2 class="card-title pad">Background processes</h2>
         <table id="bg-table">
-          <thead><tr><th>Process</th><th>CPU (s)</th><th>Peak CPU %</th><th>Threads</th><th>Priority class</th><th>Peak memory</th></tr></thead>
+          <thead><tr><th>Process</th><th class="num">CPU (s)</th><th class="num">Peak CPU %</th><th class="num">Threads</th><th>Priority class</th><th class="num">Peak memory</th></tr></thead>
           <tbody></tbody>
         </table>
-      </div>
+      </section>
     </section>
 
-    <!-- Settings -->
-    <section id="tab-settings" class="tab">
-      <p class="lead">Apps marked <b>distracting</b> are blocked when the tracker runs with <code>--focus</code>. Changes are saved per user.</p>
-      <div class="panel scroll">
-        <table id="cat-table">
-          <thead><tr><th>Process</th><th>Default</th><th>Your category</th><th></th></tr></thead>
-          <tbody></tbody>
-        </table>
-      </div>
-      <div class="panel">
-        <h3>Run focus mode</h3>
+    <!-- Focus mode -->
+    <section id="tab-settings" class="tab" aria-labelledby="h-settings">
+      <header class="page-head">
+        <h1 id="h-settings">Focus mode</h1>
+        <p>Pick a length, press start, and the apps on your block list get minimised the moment they pop up. The tracker records the session like any other.</p>
+      </header>
+      <!-- Start / running state -->
+      <section class="focus-hero" id="focus-hero">
+        <div class="focus-idle" id="focus-idle">
+          <h2 class="focus-heading">How long do you want to focus?</h2>
+          <div class="durations" id="durations" role="radiogroup" aria-label="Session length">
+            <button role="radio" data-min="15" aria-checked="false">15 min</button>
+            <button role="radio" data-min="25" aria-checked="true" class="active">25 min</button>
+            <button role="radio" data-min="50" aria-checked="false">50 min</button>
+            <button role="radio" data-min="90" aria-checked="false">90 min</button>
+          </div>
+          <button class="btn-focus" id="focus-start">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l11-6.5z"/></svg>
+            <span>Start focus</span>
+          </button>
+          <p class="focus-note" id="focus-note">Blocked apps will be minimised as soon as they open.</p>
+        </div>
+
+        <div class="focus-live" id="focus-live" hidden>
+          <span class="live-dot" aria-hidden="true"></span>
+          <p class="focus-heading">Focusing</p>
+          <p class="countdown" id="countdown" aria-live="polite">25:00</p>
+          <div class="live-bar"><span id="live-bar-fill"></span></div>
+          <button class="btn-end" id="focus-stop">End now</button>
+          <p class="focus-note" id="live-note">Changes to blocked apps apply to your next session.</p>
+        </div>
+      </section>
+
+      <!-- Blocked apps -->
+      <section class="card">
+        <div class="card-head">
+          <h2 class="card-title">Blocked apps</h2>
+          <button class="btn-add" id="open-picker">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+            <span>Add apps</span>
+          </button>
+        </div>
+        <ul class="blocked-chips" id="blocked-chips" aria-live="polite"></ul>
+        <p class="form-msg" id="add-app-msg" role="status"></p>
+      </section>
+
+      <!-- App picker: only apps installed on this PC -->
+      <dialog class="picker" id="app-picker" aria-labelledby="picker-title">
+        <div class="picker-head">
+          <h2 id="picker-title">Choose apps to block</h2>
+          <button class="icon-btn picker-close" id="close-picker" aria-label="Close">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+          </button>
+        </div>
+        <label class="picker-search">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+          <span class="visually-hidden">Search apps</span>
+          <input id="picker-search" type="search" placeholder="Search installed apps" autocomplete="off">
+        </label>
+        <ul class="picker-list" id="picker-list" aria-live="polite"></ul>
+        <p class="picker-foot">Showing apps installed on this PC. Windows' own tools aren't listed.</p>
+      </dialog>
+
+      <!-- All apps -->
+      <details class="card all-apps">
+        <summary class="card-title">All app categories</summary>
+        <p class="muted">Every app the tracker has seen. Productive and neutral apps are never blocked.</p>
+        <div class="scroll">
+          <table id="cat-table">
+            <thead><tr><th>App</th><th>Default</th><th>Your category</th><th></th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </details>
+
+      <details class="cli">
+        <summary>Prefer the terminal?</summary>
         <pre id="focus-cmd"></pre>
-        <p>Blocked now: <span id="blocked-list" class="muted">none</span></p>
-      </div>
+        <p class="blocked">Blocked right now: <span id="blocked-list">none</span></p>
+      </details>
     </section>
+
+    <p class="status" id="status" role="status"></p>
   </main>
 
   <script src="app.js"></script>

@@ -7,9 +7,30 @@ import psycopg
 from flask import Flask, jsonify, request, send_from_directory
 
 import db
+import focus_control
+import installed_apps
 import metrics
 
 app = Flask(__name__, static_folder="static", static_url_path="")
+
+
+@app.before_request
+def _block_cross_site_writes():
+    """CSRF protection for the write endpoints (one of them starts a program).
+
+    A page on another site can make the browser send a 'simple' POST to
+    127.0.0.1 without asking. Requiring a JSON content type forces a CORS
+    preflight, which we never approve, and the Origin check rejects anything
+    that isn't this dashboard.
+    """
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return None
+    origin = request.headers.get("Origin")
+    if origin and origin.rstrip("/") != request.host_url.rstrip("/"):
+        return jsonify({"error": "Requests from other sites are not allowed."}), 403
+    if not request.is_json:
+        return jsonify({"error": "Send JSON (Content-Type: application/json)."}), 415
+    return None
 
 
 @app.errorhandler(psycopg.OperationalError)
@@ -22,7 +43,12 @@ def _database_unavailable(error):
 @app.errorhandler(ValueError)
 @app.errorhandler(KeyError)
 def _bad_request(error):
-    return jsonify({"error": f"Bad request: {error}"}), 400
+    return jsonify({"error": str(error).strip("'\"")}), 400
+
+
+@app.errorhandler(focus_control.FocusError)
+def _focus_conflict(error):
+    return jsonify({"error": str(error)}), 409
 
 
 def _since(label: str):
@@ -45,6 +71,38 @@ def _records(df: pd.DataFrame) -> list:
 
 def _user() -> int:
     return int(request.args.get("user", 1))
+
+
+STREAK_MIN_PRODUCTIVE_S = 15 * 60   # a day counts towards the streak with >= 15 min productive
+
+
+def _today_and_streak(user_id: int) -> dict:
+    """Today's totals and the productive-day streak, independent of the selected range."""
+    all_activity = db.activity(user_id)
+    today = pd.Timestamp.now(tz="UTC").tz_localize(None).normalize()
+    if all_activity.empty:
+        return {"today": {"tracked_s": 0.0, "productive_s": 0.0, "distracting_s": 0.0}, "streak_days": 0}
+
+    day = all_activity.start_time.dt.normalize()
+    t = all_activity[day == today].groupby("category")["seconds"].sum()
+
+    productive_by_day = all_activity[all_activity.category == "productive"].groupby(day)["seconds"].sum()
+    good_days = set(productive_by_day[productive_by_day >= STREAK_MIN_PRODUCTIVE_S].index)
+    # Count back from today; if today doesn't qualify yet, the streak can still be alive from yesterday.
+    cursor = today if today in good_days else today - timedelta(days=1)
+    streak = 0
+    while cursor in good_days:
+        streak += 1
+        cursor -= timedelta(days=1)
+
+    return {
+        "today": {
+            "tracked_s": round(float(t.sum()), 1),
+            "productive_s": round(float(t.get("productive", 0)), 1),
+            "distracting_s": round(float(t.get("distracting", 0)), 1),
+        },
+        "streak_days": streak,
+    }
 
 
 @app.get("/")
@@ -80,6 +138,11 @@ def summary():
             "distracting_h": round(float(by_cat.get("distracting", 0)) / 3600, 2),
             "avg_focus": round(float(sm.focus_score.mean()), 1) if not sm.empty else 0.0,
             "sessions": int(len(sm)),
+            # Exact seconds: the hour values above round short sessions down to 0.
+            "tracked_s": round(total, 1),
+            "productive_s": round(float(by_cat.get("productive", 0)), 1),
+            "neutral_s": round(float(by_cat.get("neutral", 0)), 1),
+            "distracting_s": round(float(by_cat.get("distracting", 0)), 1),
         },
         "daily": _records(metrics.daily_totals(activity)),
         "top_apps": _records(metrics.top_apps(activity)),
@@ -88,6 +151,7 @@ def summary():
                            [["start_time", "process_name", "window_title", "category",
                              "category_source", "seconds"]].head(100)),
         "s_max": metrics.S_MAX,
+        **_today_and_streak(user_id),
     })
 
 
@@ -123,7 +187,7 @@ def categories():
 
 @app.post("/api/categories")
 def set_category():
-    body = request.get_json(force=True)
+    body = request.get_json()
     if body.get("label") not in db.VALID_LABELS:
         raise ValueError(f"label must be one of {db.VALID_LABELS}")
     db.set_override(int(body["user"]), int(body["app_id"]), body["label"])
@@ -132,11 +196,70 @@ def set_category():
 
 @app.delete("/api/categories")
 def reset_category():
-    body = request.get_json(force=True)
+    body = request.get_json()
     db.clear_override(int(body["user"]), int(body["app_id"]))
     return jsonify({"ok": True})
 
 
+@app.get("/api/installed-apps")
+def list_installed_apps():
+    """Apps installed on this PC, each marked with whether this user blocks it."""
+    cats = db.app_categories(_user())
+    blocked = set(cats.loc[cats.effective_category == "distracting", "process_name"])
+    apps = installed_apps.installed_apps(refresh=request.args.get("refresh") == "1")
+    return jsonify([{**a, "blocked": a["exe"] in blocked} for a in apps])
+
+
+@app.post("/api/blocked")
+def add_blocked():
+    body = request.get_json()
+    exe = db.normalise_process_name(str(body.get("process_name", "")))
+    if exe in installed_apps.NEVER_BLOCK:
+        raise ValueError(f"{exe} is part of Windows or FocusOs and can't be blocked.")
+    if not installed_apps.is_installed(exe):
+        raise ValueError(f"{exe} isn't installed on this PC. Pick an app from the list.")
+    return jsonify(db.block_app(int(body["user"]), exe))
+
+
+@app.delete("/api/blocked")
+def remove_blocked():
+    body = request.get_json()
+    db.unblock_app(int(body["user"]), int(body["app_id"]))
+    return jsonify({"ok": True})
+
+
+@app.get("/api/focus")
+def focus_status():
+    return jsonify(focus_control.status())
+
+
+@app.post("/api/focus/start")
+def focus_start():
+    body = request.get_json()
+    return jsonify(focus_control.start(int(body["user"]), int(body["minutes"])))
+
+
+@app.post("/api/focus/stop")
+def focus_stop():
+    return jsonify(focus_control.stop())
+
+
 if __name__ == "__main__":
+    import sys
+    import threading
+    import webbrowser
+
+    if db.mode() == "portable":
+        import portable_db
+        try:
+            print(portable_db.start())
+        except portable_db.PortableDbError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+    installed_apps.warm_cache_in_background()   # so the app picker opens instantly
+    url = "http://127.0.0.1:8000"
+    print(f"FocusOs dashboard: {url}  (Ctrl+C to stop)")
+    if os.environ.get("FOCUS_OPEN_BROWSER") == "1":
+        threading.Timer(1.2, lambda: webbrowser.open(url)).start()
     # Never enable the Werkzeug debugger by default: it allows code execution.
     app.run(host="127.0.0.1", port=8000, debug=os.environ.get("FOCUS_DEBUG") == "1")
