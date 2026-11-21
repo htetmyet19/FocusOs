@@ -35,6 +35,23 @@ struct IdlePeriod {
     TimePoint    end;
 };
 
+// One process in one snapshot (OS: process management + CPU scheduling).
+struct ProcessSample {
+    std::int64_t  sessionId      = 0;
+    TimePoint     sampledAt;
+    std::uint32_t pid            = 0;
+    std::uint32_t parentPid      = 0;
+    std::string   processName;           // lower-case
+    std::uint32_t threadCount    = 0;
+    std::int32_t  basePriority   = 0;    // scheduler base priority, 0-31
+    std::string   priorityClass;         // "normal", "high", ...
+    double        cpuPercent     = 0.0;  // share of ALL cores since last snapshot
+    std::int64_t  cpuDeltaMs     = 0;    // kernel + user CPU since last snapshot
+    std::int64_t  cpuTotalMs     = 0;    // kernel + user CPU since process start
+    std::uint64_t workingSetBytes = 0;
+    bool          isForeground   = false;
+};
+
 struct Session {
     std::int64_t             id        = 0;
     std::int64_t             userId    = 0;

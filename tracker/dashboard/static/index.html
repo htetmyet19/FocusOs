@@ -7,7 +7,9 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap">
   <link rel="stylesheet" href="styles.css">
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"
+          integrity="sha384-9nhczxUqK87bcKHh20fSQcTGD4qq5GhayNYSYWqwBkINBhOfQLg/P5HG5lF1urn4"
+          crossorigin="anonymous"></script>
 </head>
 <body>
   <header class="top">
@@ -16,6 +18,7 @@
       <button data-tab="overview" class="active">Overview</button>
       <button data-tab="sessions">Sessions</button>
       <button data-tab="apps">Apps</button>
+      <button data-tab="processes">Processes</button>
       <button data-tab="settings">Focus mode</button>
     </nav>
     <div class="controls">
@@ -85,6 +88,26 @@
         <h3>Recent window titles</h3>
         <table id="recent-table">
           <thead><tr><th>Start (UTC)</th><th>Process</th><th>Window title</th><th>Category</th><th>Seconds</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Processes (OS: process management + CPU scheduling) -->
+    <section id="tab-processes" class="tab">
+      <p class="lead">Being in front of you is not the same as being run by the CPU. These numbers come from snapshots of every process (<code>--proc</code>) using the CPU time the scheduler actually gave each one.</p>
+      <div class="panel"><h3>Background CPU use (not in front)</h3><canvas id="chart-bg-cpu"></canvas></div>
+      <div class="panel scroll">
+        <h3>Foreground time vs CPU time</h3>
+        <table id="fgcpu-table">
+          <thead><tr><th>Process</th><th>In front (min)</th><th>CPU (s)</th><th>CPU s per minute in front</th><th>Peak CPU %</th><th>Peak memory</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="panel scroll">
+        <h3>Background processes</h3>
+        <table id="bg-table">
+          <thead><tr><th>Process</th><th>CPU (s)</th><th>Peak CPU %</th><th>Threads</th><th>Priority class</th><th>Peak memory</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>

@@ -4,6 +4,8 @@ __pycache__/
 *.pyc
 .env
 .vscode/
-monitor/config.ini
+tracker/config.ini
 build/
 build-vs/
+# Trained model (rebuild with: python ai/title_classifier.py train)
+*.joblib
