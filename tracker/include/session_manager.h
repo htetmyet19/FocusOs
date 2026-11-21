@@ -21,6 +21,7 @@ public:
         double      idleThresholdSec = 120.0; // no input for this long => idle
         double      minSwitchSec     = 2.0;   // a window must stay this long to count (0 = off)
         double      flushIntervalSec = 15.0;  // commit buffered rows at least this often
+        double      liveIntervalSec  = 5.0;   // publish the still-open window this often (0 = off)
         std::size_t flushRows        = 50;    // ...or when the buffer reaches this size
     };
 
@@ -59,6 +60,9 @@ private:
 
     std::vector<ActivityRecord> buffer_;
     TimePoint                   lastFlush_;
+    TimePoint                   lastLive_;
+
+    void maybePublishLive(TimePoint now);
 };
 
 } // namespace ft

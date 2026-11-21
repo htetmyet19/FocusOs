@@ -233,10 +233,123 @@ def focus_status():
     return jsonify(focus_control.status())
 
 
+def _iso(ts) -> str:
+    return ts.strftime("%Y-%m-%dT%H:%M:%SZ") if pd.notna(ts) else None
+
+
+def _focus_summary(row, activity: pd.DataFrame, idle: pd.DataFrame) -> dict:
+    """Stats for one focus session (live or finished)."""
+    one = pd.DataFrame([{"session_id": row.session_id, "start_time": row.start_time,
+                         "end_time": row.end_time, "focus_mode": True}])
+    sm = metrics.session_metrics(one, activity, idle).iloc[0]
+    live = pd.isna(row.end_time)
+    duration_s = sm.duration_min * 60
+    if live:
+        # Still running: measure up to now, not up to the last saved row.
+        duration_s = max(duration_s, (pd.Timestamp.now(tz="UTC").tz_localize(None) - row.start_time).total_seconds())
+    planned = None if pd.isna(row.planned_minutes) else int(row.planned_minutes)
+    if live:
+        outcome = "running"
+    elif planned and duration_s >= planned * 60 - 10:
+        outcome = "completed"
+    elif planned:
+        outcome = "ended early"
+    else:
+        outcome = "finished"
+    tracked = activity.seconds.sum() if not activity.empty else 0.0
+    by_cat = activity.groupby("category")["seconds"].sum() if not activity.empty else pd.Series(dtype=float)
+    return {
+        "session_id": int(row.session_id),
+        "start": _iso(row.start_time), "end": _iso(row.end_time),
+        "live": live, "outcome": outcome, "planned_minutes": planned,
+        "duration_s": round(float(duration_s), 1),
+        "tracked_s": round(float(tracked), 1),
+        "productive_s": round(float(by_cat.get("productive", 0)), 1),
+        "neutral_s": round(float(by_cat.get("neutral", 0)), 1),
+        "distracting_s": round(float(by_cat.get("distracting", 0)), 1),
+        "idle_s": round(float(sm.idle_min * 60), 1),
+        "switches": int(sm.switches),
+        "focus_score": float(sm.focus_score),
+        "blocks": int(row.blocks),
+    }
+
+
+@app.get("/api/focus/sessions")
+def focus_history():
+    """Recent focus sessions, newest first."""
+    out = []
+    for row in db.focus_sessions(_user()).itertuples():
+        act = db.session_activity(int(row.session_id))
+        idl = db.session_idle(int(row.session_id))
+        out.append(_focus_summary(row, act, idl))
+    return jsonify(out)
+
+
+@app.get("/api/focus/session/<int:session_id>")
+def focus_session_detail(session_id: int):
+    """Everything about one focus session: stats, apps, blocked attempts, timeline."""
+    rows = db.focus_sessions(_user(), limit=500)
+    rows = rows[rows.session_id == session_id]
+    if rows.empty:
+        raise KeyError(f"No focus session {session_id} for this user")
+    row = next(rows.itertuples())
+    act = db.session_activity(session_id)
+    idl = db.session_idle(session_id)
+    blocks = db.focus_blocks(session_id)
+
+    # A running session's current window isn't in activity_log until you
+    # switch away; add it from session_live so the live view is up to date.
+    live = db.live_status(session_id) if pd.isna(row.end_time) else None
+    if live is not None:
+        now = pd.Timestamp.now(tz="UTC").tz_localize(None)
+        if live.is_idle:
+            idl = pd.concat([idl, pd.DataFrame([{"idle_id": -1, "session_id": session_id,
+                                                 "start_time": live.current_since, "end_time": now}])],
+                            ignore_index=True)
+        elif isinstance(live.process_name, str) and live.process_name:
+            open_row = {"log_id": -1, "session_id": session_id, "process_name": live.process_name,
+                        "window_title": live.window_title, "start_time": live.current_since, "end_time": now,
+                        "category": live.category, "category_source": "live",
+                        "seconds": max((now - live.current_since).total_seconds(), 0.0)}
+            act = pd.concat([act, pd.DataFrame([open_row])], ignore_index=True) if not act.empty \
+                else pd.DataFrame([open_row])
+
+    summary = _focus_summary(row, act, idl)
+    apps = (act.groupby(["process_name", "category"], as_index=False)["seconds"].sum()
+            .sort_values("seconds", ascending=False).head(8)) if not act.empty else pd.DataFrame()
+    # Per app: how often, and what was done ("closed", "minimised", "terminated").
+    blocked_apps = []
+    if not blocks.empty:
+        for name, grp in blocks.groupby("process_name"):
+            blocked_apps.append({"process_name": name, "count": int(len(grp)),
+                                 "actions": {a: int(n) for a, n in grp.action.value_counts().items()}})
+        blocked_apps.sort(key=lambda b: -b["count"])
+    last = act.iloc[-1] if not act.empty else None
+
+    segments = [{"label": r.process_name, "kind": r.category, "start": _iso(r.start_time),
+                 "end": _iso(r.end_time), "title": r.window_title} for r in act.itertuples()]
+    segments += [{"label": "(idle)", "kind": "idle", "start": _iso(r.start_time), "end": _iso(r.end_time),
+                  "title": ""} for r in idl.itertuples()]
+    segments.sort(key=lambda s: s["start"])
+
+    return jsonify({
+        **summary,
+        "apps": [{"process_name": r.process_name, "category": r.category, "seconds": round(float(r.seconds), 1)}
+                 for r in apps.itertuples()],
+        "blocked_apps": blocked_apps,
+        "block_events": [{"at": _iso(r.blocked_at), "process_name": r.process_name, "action": r.action}
+                         for r in blocks.tail(20).itertuples()],
+        "last_app": None if last is None else {"process_name": last.process_name, "title": last.window_title,
+                                               "category": last.category},
+        "segments": segments,
+    })
+
+
 @app.post("/api/focus/start")
 def focus_start():
     body = request.get_json()
-    return jsonify(focus_control.start(int(body["user"]), int(body["minutes"])))
+    return jsonify(focus_control.start(int(body["user"]), int(body["minutes"]),
+                                       str(body.get("on_block", "close"))))
 
 
 @app.post("/api/focus/stop")

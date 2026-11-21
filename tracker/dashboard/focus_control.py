@@ -77,10 +77,15 @@ def _tracker_config() -> Path:
     return CONFIG_PATH
 
 
-def start(user_id: int, minutes: int) -> dict:
+ON_BLOCK_FLAGS = {"close": "--close", "minimise": None}
+
+
+def start(user_id: int, minutes: int, on_block: str = "close") -> dict:
     global _session
     if minutes not in ALLOWED_MINUTES:
         raise FocusError(f"Choose one of {', '.join(map(str, ALLOWED_MINUTES))} minutes.")
+    if on_block not in ON_BLOCK_FLAGS:
+        raise FocusError("on_block must be 'close' or 'minimise'.")
     if not TRACKER_EXE.exists():
         raise FocusError(f"Tracker not found at {TRACKER_EXE}. Build it first (see README).")
     with _lock:
@@ -88,14 +93,18 @@ def start(user_id: int, minutes: int) -> dict:
             raise FocusError("The tracker is already running. End that session first.")
         LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         log = open(LOG_PATH, "w", encoding="utf-8")
+        args = [str(TRACKER_EXE), "--config", str(_tracker_config()), "--user", str(user_id),
+                "--focus", "--minutes", str(minutes)]
+        if ON_BLOCK_FLAGS[on_block]:
+            args.append(ON_BLOCK_FLAGS[on_block])
         proc = subprocess.Popen(
-            [str(TRACKER_EXE), "--config", str(_tracker_config()), "--user", str(user_id),
-             "--focus", "--minutes", str(minutes)],
+            args,
             cwd=str(TRACKER_DIR), stdout=log, stderr=subprocess.STDOUT,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         log.close()   # the child keeps its own handle
-        _session = {"proc": proc, "started": time.time(), "minutes": minutes, "user": user_id}
+        _session = {"proc": proc, "started": time.time(), "minutes": minutes, "user": user_id,
+                    "on_block": on_block}
 
     # Give it a moment: a bad config or an unreachable database exits at once.
     for _ in range(30):
@@ -140,6 +149,6 @@ def status() -> dict:
            "tracker_found": TRACKER_EXE.exists(), "choices": list(ALLOWED_MINUTES)}
     if running and s:
         elapsed = time.time() - s["started"]
-        out.update(focus=True, started_here=True, minutes=s["minutes"], user=s["user"],
+        out.update(focus=True, started_here=True, minutes=s["minutes"], user=s["user"], on_block=s["on_block"],
                    remaining_s=max(0, round(s["minutes"] * 60 - elapsed)))
     return out

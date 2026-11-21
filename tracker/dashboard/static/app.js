@@ -105,6 +105,7 @@ async function load() {
     renderApps(summary);
     renderProcesses(procs);
     renderSettings(cats);
+    loadFocusHistory();
     $("#status").textContent = `Updated ${new Date().toLocaleTimeString()}`;
   } catch (e) {
     $("#status").textContent = e.message;
@@ -294,26 +295,31 @@ function renderSessions(d) {
   };
 }
 
+// Draw activity/idle segments proportionally across a .timeline element.
+// `until` (ms) stretches the scale to a later time, e.g. "now" for a live session.
+function renderTimeline(tl, segments, from = null, until = null) {
+  tl.innerHTML = "";
+  if (!segments.length) return;
+  const t0 = from ?? Date.parse(segments[0].start);
+  const t1 = Math.max(until ?? 0, ...segments.map(s => Date.parse(s.end)));
+  const span = Math.max(t1 - t0, 1);
+  for (const s of segments) {
+    const el = document.createElement("div");
+    el.className = `seg ${s.kind}`;
+    el.style.left = `${100 * (Date.parse(s.start) - t0) / span}%`;
+    el.style.width = `${100 * (Date.parse(s.end) - Date.parse(s.start)) / span}%`;
+    el.title = `${s.label}  ${fmtTs(s.start)} → ${fmtTs(s.end)}${s.title ? "\n" + s.title : ""}`;
+    tl.appendChild(el);
+  }
+}
+
 async function showSession(id) {
   const { segments } = await api(`/api/session/${id}?user=${state.user}`);
   const m = state.data.sessions.find(s => s.session_id === id);
   $("#session-detail").hidden = false;
   $("#detail-id").textContent = id;
 
-  const tl = $("#timeline"); tl.innerHTML = "";
-  if (segments.length) {
-    const t0 = Date.parse(segments[0].start);
-    const t1 = Math.max(...segments.map(s => Date.parse(s.end)));
-    const span = Math.max(t1 - t0, 1);
-    for (const s of segments) {
-      const el = document.createElement("div");
-      el.className = `seg ${s.kind}`;
-      el.style.left = `${100 * (Date.parse(s.start) - t0) / span}%`;
-      el.style.width = `${100 * (Date.parse(s.end) - Date.parse(s.start)) / span}%`;
-      el.title = `${s.label}  ${fmtTs(s.start)} → ${fmtTs(s.end)}${s.title ? "\n" + s.title : ""}`;
-      tl.appendChild(el);
-    }
-  }
+  renderTimeline($("#timeline"), segments);
   $("#formula-values").textContent =
     `T_productive = ${m.productive_min} min, T_session = ${m.duration_min} min, T_idle = ${m.idle_min} min, ` +
     `S = ${m.switches} switches, S_max = ${state.data.s_max}/h  →  score ${m.focus_score}`;
@@ -419,10 +425,20 @@ function renderBlocked(cats) {
         return `<li data-app="${esc(c.app_id)}" class="${missing ? "not-installed" : ""}" title="${esc(c.process_name)}">${esc(label)}${missing ? ' <span class="chip-sub">not installed</span>' : ""}<button type="button" aria-label="Stop blocking ${esc(label)}" title="Stop blocking">×</button></li>`;
       }).join("")
     : `<li class="empty-chip">Nothing blocked yet. Add the apps that pull you away.</li>`;
-  const active = blocked.filter(c => !state.installed.length || byExe.has(c.process_name)).length;
-  $("#focus-note").textContent = active
-    ? `${active} app${active === 1 ? "" : "s"} will be minimised as soon as ${active === 1 ? "it opens" : "they open"}.`
-    : "Your block list is empty, so nothing will be minimised.";
+  state.activeBlocked = blocked.filter(c => !state.installed.length || byExe.has(c.process_name)).length;
+  updateFocusNote();
+}
+
+// The note under Start focus: how many apps, and what happens to them.
+function updateFocusNote() {
+  const n = state.activeBlocked ?? 0;
+  const el = $("#focus-note");
+  el.classList.remove("is-error");
+  if (!n) { el.textContent = "Your block list is empty, so nothing will be stopped."; return; }
+  const apps = `${n} app${n === 1 ? "" : "s"}`;
+  el.textContent = state.onBlock === "minimise"
+    ? `${apps} will be minimised as soon as ${n === 1 ? "it opens" : "they open"}, with a notification.`
+    : `${apps} will be closed as soon as ${n === 1 ? "it opens" : "they open"}, with a notification. Save your work in ${n === 1 ? "it" : "them"} first.`;
 }
 
 function setFormMsg(text, isError = false) {
@@ -565,11 +581,129 @@ function setFocusNote(text, isError = false) {
 }
 
 async function refreshFocus() {
+  const wasRunning = state.focus.running;
   try { state.focus = await api("/api/focus"); } catch (_) { state.focus = { running: false }; }
   renderFocus();
+  // A session just ended (time up or stopped elsewhere): show its summary.
+  if (wasRunning && !state.focus.running) { state.selectedFocusId = null; loadFocusHistory(); }
 }
 
-// One timer: ticks the countdown every second, re-syncs with the server every 10 s.
+/* ---------- focus session details: live stats, summary, history ---------- */
+state.focusHistory = [];
+state.selectedFocusId = null;     // a session picked in the history table
+
+const OUTCOME_TEXT = { completed: "Completed", "ended early": "Ended early", running: "In progress", finished: "Finished" };
+const pctOf = (part, whole) => whole > 0 ? Math.round(100 * part / whole) : 0;
+
+function fmtWhen(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return d.toLocaleString([], { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+}
+
+async function loadFocusHistory() {
+  try {
+    state.focusHistory = await api(`/api/focus/sessions?user=${state.user}`);
+  } catch (_) {
+    state.focusHistory = [];
+  }
+  renderFocusHistory();
+  const live = state.focusHistory.find(s => s.live);
+  const pick = state.selectedFocusId ?? (state.focusHistory.find(s => !s.live) || null)?.session_id;
+  if (live && state.focus.running) loadLiveDetail(live.session_id);
+  if (pick) loadFocusSummary(pick); else $("#focus-summary").hidden = true;
+}
+
+function renderFocusHistory() {
+  const rows = state.focusHistory;
+  $("#focus-history-card").hidden = !rows.length;
+  $("#focus-history tbody").innerHTML = rows.map(s => `
+    <tr data-id="${esc(s.session_id)}" class="${s.session_id === state.selectedFocusId ? "selected" : ""}">
+      <td>${esc(fmtWhen(s.start))}</td>
+      <td>${esc(fmtShort(s.duration_s))}${s.planned_minutes ? ` <span class="small">of ${esc(s.planned_minutes)}${NBSP}min</span>` : ""}</td>
+      <td><span class="outcome ${esc(s.outcome.replace(" ", "-"))}">${esc(OUTCOME_TEXT[s.outcome] || s.outcome)}</span></td>
+      <td>${pctOf(s.productive_s, s.tracked_s)}%</td>
+      <td>${esc(s.blocks)}</td>
+      <td class="score ${scoreCls(s.focus_score)}">${s.live ? "–" : esc(Math.round(s.focus_score))}</td>
+    </tr>`).join("");
+}
+
+// "closed 2×, minimised 1×" (force-closes count as closed, marked "forced")
+function describeActions(b) {
+  const a = b.actions || {};
+  const parts = [];
+  const closed = (a.closed || 0) + (a.terminated || 0);
+  if (closed) parts.push(`closed ${closed}×${a.terminated ? ` (${a.terminated} forced)` : ""}`);
+  if (a.minimised) parts.push(`minimised ${a.minimised}×`);
+  return parts.length ? parts.join(", ") : `${b.count}×`;
+}
+
+// Live stats inside the violet "Focusing" panel.
+async function loadLiveDetail(id) {
+  let d;
+  try { d = await api(`/api/focus/session/${id}?user=${state.user}`); } catch (_) { return; }
+  if (!d.live) return;
+  $("#ls-prod").textContent = fmtShort(d.productive_s);
+  $("#ls-dist").textContent = fmtShort(d.distracting_s);
+  $("#ls-blocks").textContent = d.blocks;
+  $("#ls-now").textContent = d.last_app ? d.last_app.process_name : "Saving first data…";
+  $("#ls-now").title = d.last_app ? d.last_app.title : "";
+  renderTimeline($("#live-timeline"), d.segments, Date.parse(d.start), Date.now());
+
+  // Apps used so far, one row per app (Chrome tabs in different categories are
+  // merged; the dot shows where most of its time went). Longest first; the
+  // app in front right now is marked.
+  const nowApp = d.last_app?.process_name;
+  const merged = new Map();
+  for (const a of d.apps) {
+    const m = merged.get(a.process_name) || { process_name: a.process_name, seconds: 0, best: 0, category: a.category };
+    m.seconds += a.seconds;
+    if (a.seconds > m.best) { m.best = a.seconds; m.category = a.category; }
+    merged.set(a.process_name, m);
+  }
+  const liveApps = [...merged.values()].sort((x, y) => y.seconds - x.seconds);
+  $("#live-apps").innerHTML = liveApps.length
+    ? liveApps.map(a => `<li class="${a.process_name === nowApp ? "is-now" : ""}" title="${esc(a.category)}">
+        <span class="ll-dot ${esc(a.category)}" aria-hidden="true"></span>
+        <span class="ll-name">${esc(a.process_name)}</span>
+        ${a.process_name === nowApp ? '<span class="ll-now">now</span>' : ""}
+        <span class="ll-time">${esc(fmtShort(a.seconds))}</span></li>`).join("")
+    : `<li class="ll-empty">Waiting for the first app…</li>`;
+  $("#live-blocked").innerHTML = d.blocked_apps.length
+    ? d.blocked_apps.map(b => `<li><span class="ll-name">${esc(b.process_name)}</span><span class="ll-time">${esc(describeActions(b))}</span></li>`).join("")
+    : `<li class="ll-empty">None so far.</li>`;
+}
+
+async function loadFocusSummary(id) {
+  let d;
+  try { d = await api(`/api/focus/session/${id}?user=${state.user}`); } catch (_) { return; }
+  const card = $("#focus-summary");
+  card.hidden = false;
+  const isLatest = state.focusHistory.find(s => !s.live)?.session_id === id;
+  $("#fs-title").textContent = isLatest ? "Your last focus session" : `Focus session ${d.session_id}`;
+  const out = $("#fs-outcome");
+  out.textContent = OUTCOME_TEXT[d.outcome] || d.outcome;
+  out.className = `outcome ${d.outcome.replace(" ", "-")}`;
+  const planned = d.planned_minutes ? `, planned ${d.planned_minutes}${NBSP}min` : "";
+  $("#fs-when").textContent = `${fmtWhen(d.start)}${planned}`;
+  $("#fs-score").textContent = Math.round(d.focus_score);
+  $("#fs-score").className = `fs-value score ${scoreCls(d.focus_score)}`;
+  $("#fs-length").textContent = fmtShort(d.duration_s);
+  $("#fs-prod").textContent = fmtShort(d.productive_s);
+  $("#fs-dist").textContent = fmtShort(d.distracting_s);
+  $("#fs-blocks").textContent = d.blocks;
+  $("#fs-switches").textContent = d.switches;
+  renderTimeline($("#fs-timeline"), d.segments, Date.parse(d.start), d.end ? Date.parse(d.end) : null);
+  $("#fs-apps").innerHTML = d.apps.length
+    ? d.apps.map(a => `<li><span class="proc">${esc(a.process_name)}</span><span>${badge(a.category)} <span class="muted">${esc(fmtShort(a.seconds))}</span></span></li>`).join("")
+    : `<li class="fs-empty">No app activity was saved.</li>`;
+  $("#fs-blocked").innerHTML = d.blocked_apps.length
+    ? d.blocked_apps.map(b => `<li><span class="proc">${esc(b.process_name)}</span><span class="muted">${esc(describeActions(b))}</span></li>`).join("")
+    : `<li class="fs-empty">No blocked app tried to open. Nice.</li>`;
+}
+
+// One timer: ticks the countdown every second, re-syncs with the server
+// every 10 s, and refreshes the live stats every 5 s while focusing.
 let focusTick = 0;
 setInterval(() => {
   const f = state.focus;
@@ -578,7 +712,12 @@ setInterval(() => {
     renderFocus();
     if (f.remaining_s === 0) setTimeout(async () => { await refreshFocus(); load(); }, 2500);
   }
-  if (++focusTick % 10 === 0) refreshFocus();
+  focusTick++;
+  if (focusTick % 10 === 0) refreshFocus();
+  if (f.running && focusTick % 5 === 0) {
+    const live = state.focusHistory.find(s => s.live);
+    if (live) loadLiveDetail(live.session_id); else loadFocusHistory();
+  }
 }, 1000);
 
 async function startFocus() {
@@ -586,9 +725,10 @@ async function startFocus() {
   btn.disabled = true;
   setFocusNote("Starting…");
   try {
-    state.focus = await jsonPost("/api/focus/start", { user: state.user, minutes: state.focusMinutes });
+    state.focus = await jsonPost("/api/focus/start", { user: state.user, minutes: state.focusMinutes, on_block: state.onBlock });
     renderFocus();
     setFocusNote("");
+    loadFocusHistory();
   } catch (err) {
     btn.disabled = false;
     setFocusNote(err.message, true);
@@ -607,6 +747,9 @@ async function stopFocus() {
   btn.disabled = false;
   btn.textContent = "End now";
   renderFocus();
+  state.selectedFocusId = null;
+  await loadFocusHistory();
+  $("#focus-summary").scrollIntoView({ behavior: "smooth", block: "start" });
   load();
 }
 
@@ -617,6 +760,23 @@ function initFocus() {
     state.focusMinutes = +b.dataset.min;
     $("#focus-cmd").textContent = `focus_tracker.exe --user ${state.user} --focus --minutes ${state.focusMinutes}`;
   };
+  // Close or minimise blocked apps (remembered in this browser).
+  try { state.onBlock = localStorage.getItem("focusos.onBlock") === "minimise" ? "minimise" : "close"; } catch (_) { state.onBlock = "close"; }
+  const syncOnBlock = () => {
+    document.querySelectorAll(".on-block button").forEach(x => {
+      const on = x.dataset.action === state.onBlock;
+      x.classList.toggle("active", on);
+      x.setAttribute("aria-checked", on);
+    });
+    updateFocusNote();
+  };
+  document.querySelector(".on-block").onclick = (e) => {
+    const b = e.target.closest("button[data-action]"); if (!b) return;
+    state.onBlock = b.dataset.action;
+    try { localStorage.setItem("focusos.onBlock", state.onBlock); } catch (_) { /* storage blocked */ }
+    syncOnBlock();
+  };
+  syncOnBlock();
   $("#focus-start").onclick = startFocus;
   $("#focus-stop").onclick = stopFocus;
   $("#blocked-chips").onclick = removeBlocked;
@@ -628,6 +788,16 @@ function initFocus() {
   $("#app-picker").addEventListener("click", (e) => { if (e.target.id === "app-picker") e.target.close(); });
   // The Today chip: jump to the Focus tab (or show the running session there).
   $("#today-focus").onclick = () => document.querySelector('.tabs button[data-tab="settings"]').click();
+  $("#focus-history tbody").onclick = (e) => {
+    const tr = e.target.closest("tr[data-id]"); if (!tr) return;
+    const id = +tr.dataset.id;
+    const s = state.focusHistory.find(x => x.session_id === id);
+    if (s?.live) return;                       // the live one is shown in the panel above
+    state.selectedFocusId = id;
+    renderFocusHistory();
+    loadFocusSummary(id);
+    $("#focus-summary").scrollIntoView({ behavior: "smooth", block: "start" });
+  };
   refreshFocus();
 }
 

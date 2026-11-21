@@ -233,6 +233,78 @@ def unblock_app(user_id: int, app_id: int) -> None:
                          (user_id, app_id))
 
 
+def focus_sessions(user_id: int, limit: int = 10) -> pd.DataFrame:
+    """Recent focus sessions with their planned length and how many blocks happened."""
+    df = _query(
+        """
+        SELECT s.session_id, s.start_time, s.end_time, s.planned_minutes,
+               (SELECT count(*) FROM focus_blocks b WHERE b.session_id = s.session_id) AS blocks
+        FROM sessions s
+        WHERE s.user_id = %s AND s.focus_mode
+        ORDER BY s.start_time DESC
+        LIMIT %s
+        """,
+        (user_id, limit),
+        ["session_id", "start_time", "end_time", "planned_minutes", "blocks"],
+    )
+    return _naive_utc(df, "start_time", "end_time")
+
+
+def focus_blocks(session_id: int) -> pd.DataFrame:
+    df = _query(
+        """
+        SELECT b.blocked_at, a.process_name, b.action
+        FROM focus_blocks b JOIN applications a ON a.app_id = b.app_id
+        WHERE b.session_id = %s
+        ORDER BY b.blocked_at
+        """,
+        (session_id,),
+        ["blocked_at", "process_name", "action"],
+    )
+    return _naive_utc(df, "blocked_at")
+
+
+def session_activity(session_id: int) -> pd.DataFrame:
+    df = _query(
+        "SELECT log_id, session_id, process_name, window_title, start_time, end_time, "
+        "category, category_source, seconds FROM vw_activity WHERE session_id = %s ORDER BY start_time",
+        (session_id,), ACTIVITY_COLUMNS,
+    )
+    df = _naive_utc(df, "start_time", "end_time")
+    return _numeric(df, "seconds")
+
+
+def live_status(session_id: int):
+    """The still-open window of a running session, with its effective category, or None."""
+    df = _query(
+        """
+        SELECT a.process_name, l.window_title, l.current_since, l.updated_at, l.is_idle,
+               COALESCE(o.label, d.label, 'neutral') AS category
+        FROM session_live l
+        JOIN sessions s ON s.session_id = l.session_id
+        LEFT JOIN applications a ON a.app_id = l.app_id
+        LEFT JOIN categories d ON d.category_id = a.default_category
+        LEFT JOIN user_app_category u ON u.app_id = l.app_id AND u.user_id = s.user_id
+        LEFT JOIN categories o ON o.category_id = u.category_id
+        WHERE l.session_id = %s
+        """,
+        (session_id,),
+    )
+    if df.empty:
+        return None
+    df = _naive_utc(df, "current_since", "updated_at")
+    return df.iloc[0]
+
+
+def session_idle(session_id: int) -> pd.DataFrame:
+    df = _query(
+        "SELECT idle_id, session_id, start_time, end_time FROM idle_periods "
+        "WHERE session_id = %s ORDER BY start_time",
+        (session_id,), ["idle_id", "session_id", "start_time", "end_time"],
+    )
+    return _naive_utc(df, "start_time", "end_time")
+
+
 def process_usage(user_id: int, since=None) -> dict:
     """OS views: foreground vs CPU time, and background CPU use, for the range."""
     since_sql, params = "", [user_id]

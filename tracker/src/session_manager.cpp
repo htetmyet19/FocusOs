@@ -15,6 +15,7 @@ void SessionManager::start(TimePoint now) {
     session_.start = now;
     session_.id    = db_.openSession(session_.userId, now, session_.focusMode);
     lastFlush_     = now;
+    lastLive_      = now - std::chrono::hours(1);   // publish on the first sample
     running_       = true;
 }
 
@@ -75,10 +76,33 @@ void SessionManager::onSample(const WindowInfo& win, double idleSeconds, TimePoi
     }
 
     maybeFlush(now);
+    maybePublishLive(now);
+}
+
+// The open activity only reaches activity_log when it ends; publish it
+// separately so a live view can show what is happening right now.
+void SessionManager::maybePublishLive(TimePoint now) {
+    if (cfg_.liveIntervalSec <= 0.0 || secondsBetween(lastLive_, now) < cfg_.liveIntervalSec) return;
+    LiveStatus s;
+    s.sessionId = session_.id;
+    s.updatedAt = now;
+    s.idle      = idle_;
+    if (idle_) {
+        s.since = idleStart_;
+    } else if (current_) {
+        s.processName = current_->processName;
+        s.windowTitle = current_->windowTitle;
+        s.since       = currentStart_;
+    } else {
+        s.since = now;
+    }
+    db_.updateLive(s);
+    lastLive_ = now;
 }
 
 void SessionManager::stop(TimePoint now) {
     if (!running_) return;
+    db_.clearLive(session_.id);
     if (idle_) {
         db_.insertIdle({session_.id, idleStart_, now});
         idle_ = false;

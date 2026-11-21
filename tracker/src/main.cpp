@@ -12,13 +12,18 @@
 #include "focus_mode.h"
 #include "idle_detector.h"
 #include "log.h"
+#include "notifier.h"
 #include "process_monitor.h"
 #include "session_manager.h"
 #include "window_monitor.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cctype>
+#include <cmath>
 #include <csignal>
+#include <map>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
@@ -131,9 +136,21 @@ struct Options {
     double                procSec    = 10.0;   // 0 = no process sampling
     double                minutes    = 0.0;    // 0 = run until Ctrl+C
     bool                  focusMode  = false;
-    bool                  terminate  = false;
+    ft::FocusMode::Policy policy     = ft::FocusMode::Policy::Minimise;
+    bool                  notify     = true;
     std::set<std::string> extraBlock;
 };
+
+// "whatsapp.root.exe" -> "Whatsapp", "discord.exe" -> "Discord"
+std::string friendlyAppName(std::string exe) {
+    for (const char* suffix : {".exe", ".root"}) {
+        const std::string s(suffix);
+        if (exe.size() > s.size() && exe.compare(exe.size() - s.size(), s.size(), s) == 0)
+            exe.erase(exe.size() - s.size());
+    }
+    if (!exe.empty()) exe[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(exe[0])));
+    return exe;
+}
 
 void usage() {
     std::cout <<
@@ -147,7 +164,10 @@ void usage() {
         "  --minutes <n>      stop by itself after n minutes, e.g. 25 (default: until Ctrl+C)\n"
         "  --focus            enable Focus Mode (block 'distracting' apps)\n"
         "  --block <exe>      extra process to block (repeatable)\n"
-        "  --terminate        kill blocked apps instead of minimising\n"
+        "  --close            close blocked apps (asks first, force-closes if they stay open)\n"
+        "  --terminate        force-close blocked apps immediately\n"
+        "                     (default with --focus: minimise them)\n"
+        "  --no-notify        don't show a Windows notification when an app is blocked\n"
         "  --stop             ask the running tracker to stop cleanly, then exit\n";
 }
 
@@ -167,7 +187,9 @@ Options parse(int argc, char** argv) {
         else if (a == "--proc")      o.procSec    = std::stod(next());
         else if (a == "--minutes")   o.minutes    = std::stod(next());
         else if (a == "--focus")     o.focusMode  = true;
-        else if (a == "--terminate") o.terminate  = true;
+        else if (a == "--close")     o.policy     = ft::FocusMode::Policy::Close;
+        else if (a == "--terminate") o.policy     = ft::FocusMode::Policy::Terminate;
+        else if (a == "--no-notify") o.notify     = false;
         else if (a == "--block")     o.extraBlock.insert(next());
         else if (a == "--stop")      std::exit(requestStop());
         else { usage(); std::exit(a == "--help" ? 0 : 1); }
@@ -236,12 +258,21 @@ int main(int argc, char** argv) {
             auto fromDb = writer.distractingApps(opt.userId);
             blocked.insert(fromDb.begin(), fromDb.end());
         }
-        ft::FocusMode focus(blocked, opt.terminate);
+        ft::FocusMode focus(blocked, opt.policy);
+
+        // Thread 4: notifications ("Discord was closed"), only needed in Focus Mode.
+        ft::Notifier notifier;
+        if (opt.focusMode && opt.notify) notifier.start("FocusOs: focus mode is on");
+        std::map<std::string, ft::TimePoint> lastNotified;   // at most one notification per app per 8 s
 
         ft::SessionManager::Config cfg;
         cfg.idleThresholdSec = opt.idleSec;
+        // The dashboard shows a focus session live, so save more often then.
+        if (opt.focusMode) cfg.flushIntervalSec = 5.0;
         ft::SessionManager sm(writer, opt.userId, opt.focusMode, cfg);
         sm.start(ft::Clock::now());            // synchronous: we need the session id
+        if (opt.minutes > 0.0)                 // still single-threaded here, so safe on pg directly
+            pg.setPlannedMinutes(sm.sessionId(), std::max(1, static_cast<int>(std::lround(opt.minutes))));
         writer.start();
 
         std::thread procThread;
@@ -273,9 +304,28 @@ int main(int argc, char** argv) {
             auto win   = monitor.poll();
             auto idleS = idle.idleSeconds();
 
-            if (opt.focusMode && focus.enforce(win)) {
-                ft::logInfo("[focus] blocked ", win.processName);
+            const auto action = opt.focusMode ? focus.enforce(win, now) : ft::FocusMode::Action::None;
+            if (action == ft::FocusMode::Action::Minimised || action == ft::FocusMode::Action::Closed ||
+                action == ft::FocusMode::Action::ForceClosed) {
+                const char* what = ft::FocusMode::actionName(action);
+                ft::logInfo("[focus] ", what, " ", win.processName);
+                writer.insertFocusBlock({sm.sessionId(), now, win.processName, what});
+
+                auto seen = lastNotified.find(win.processName);
+                if (opt.notify && (seen == lastNotified.end() || ft::secondsBetween(seen->second, now) >= 8.0)) {
+                    lastNotified[win.processName] = now;
+                    std::string text = "You're in a focus session.";
+                    if (opt.minutes > 0.0) {
+                        const auto left = std::chrono::duration_cast<std::chrono::minutes>(
+                            deadline - std::chrono::steady_clock::now()).count();
+                        text = "You're focusing: " + std::to_string(std::max<long long>(left, 0) + 1) + " min left.";
+                    }
+                    const std::string verb = action == ft::FocusMode::Action::Minimised ? " was minimised" : " was closed";
+                    notifier.notify(friendlyAppName(win.processName) + verb, text + " It will be back after your session.");
+                }
                 win = monitor.poll();   // re-sample after acting
+            } else if (action == ft::FocusMode::Action::Failed) {
+                ft::logError("[focus] could not stop ", win.processName, " (it may run as administrator)");
             }
 
             g_foregroundPid.store(win.valid ? win.pid : 0);

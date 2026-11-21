@@ -98,15 +98,56 @@ CREATE TABLE IF NOT EXISTS process_samples (
 CREATE INDEX IF NOT EXISTS idx_process_session_time ON process_samples (session_id, sampled_at);
 CREATE INDEX IF NOT EXISTS idx_process_app ON process_samples (app_id);
 
+-- Planned length of a timed session (--minutes), to show "ended early" vs "completed".
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS planned_minutes INTEGER NULL CHECK (planned_minutes > 0);
+
+-- What a running session is doing right now: one row per running session,
+-- upserted by the tracker every few seconds and deleted when it stops. Lets
+-- the dashboard show the still-open window, which activity_log only gets
+-- once you switch away from it.
+CREATE TABLE IF NOT EXISTS session_live (
+    session_id     BIGINT      PRIMARY KEY REFERENCES sessions (session_id) ON DELETE CASCADE,
+    app_id         BIGINT      NULL REFERENCES applications (app_id),   -- NULL = no window / idle
+    window_title   TEXT        NOT NULL DEFAULT '',
+    current_since  TIMESTAMPTZ NOT NULL,
+    is_idle        BOOLEAN     NOT NULL DEFAULT FALSE,
+    updated_at     TIMESTAMPTZ NOT NULL
+);
+
+-- Every time Focus Mode pushed a blocked app away (OS: process control).
+CREATE TABLE IF NOT EXISTS focus_blocks (
+    block_id    BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    session_id  BIGINT      NOT NULL REFERENCES sessions (session_id) ON DELETE CASCADE,
+    blocked_at  TIMESTAMPTZ NOT NULL,
+    app_id      BIGINT      NOT NULL REFERENCES applications (app_id),
+    action      TEXT        NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_focus_blocks_session ON focus_blocks (session_id, blocked_at);
+-- minimised = window minimised; closed = asked to close (WM_CLOSE);
+-- terminated = force-closed (TerminateProcess). Re-created so older
+-- databases (which allowed only minimised/terminated) get 'closed' too.
+ALTER TABLE focus_blocks DROP CONSTRAINT IF EXISTS focus_blocks_action_check;
+ALTER TABLE focus_blocks ADD CONSTRAINT focus_blocks_action_check
+    CHECK (action IN ('minimised', 'closed', 'terminated'));
+
 -- ---------------------------------------------------------------- AI
 
--- Hand-labelled window titles used to train the classifier.
+-- Labelled window titles used to train the classifier.
+-- source = 'user' for your own labels, 'demo' for generated demo data
+-- (remove those with: DELETE FROM title_training_samples WHERE source = 'demo').
 CREATE TABLE IF NOT EXISTS title_training_samples (
     id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     window_title  TEXT        NOT NULL,
     label         TEXT        NOT NULL REFERENCES categories (label),
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- Added in 1.1; ALTER ... IF NOT EXISTS keeps older databases upgradeable.
+ALTER TABLE title_training_samples ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'user';
+ALTER TABLE title_training_samples ADD COLUMN IF NOT EXISTS template_group TEXT NULL;  -- demo only: for grouped validation
+DO $$ BEGIN
+    ALTER TABLE title_training_samples ADD CONSTRAINT chk_training_source CHECK (source IN ('user', 'demo'));
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
 -- Every prediction the model made (also low-confidence ones), so each row is
 -- classified once and accuracy can be audited later.

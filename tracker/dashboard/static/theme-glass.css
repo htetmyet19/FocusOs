@@ -1,0 +1,185 @@
+/* FocusOs glass theme (preview).
+   Loaded only with ?theme=glass; everything is scoped to [data-style="glass"]
+   so the default theme is untouched.
+   Recipe: aurora background + frosted panels (translucent fill, backdrop blur,
+   1px light edge, inner top highlight). Fills stay opaque enough for text
+   contrast: glass that hurts readability is decoration, not design. */
+
+:root[data-style="glass"] {
+  --canvas: #EEF0FF;
+  --surface: rgba(255, 255, 255, .62);
+  --glass: rgba(255, 255, 255, .58);
+  --glass-strong: rgba(255, 255, 255, .78);
+  --glass-edge: rgba(255, 255, 255, .75);
+  --glass-shadow: 0 1px 0 rgba(255, 255, 255, .7) inset, 0 20px 50px -24px rgba(56, 34, 160, .35);
+  --rule: rgba(27, 22, 64, .09);
+  --row-hover: rgba(108, 76, 245, .06);
+  --row-selected: rgba(108, 76, 245, .12);
+  --tint-focus: rgba(108, 76, 245, .14);
+  --tint-tracked: rgba(46, 144, 250, .14);
+  --tint-prod: rgba(20, 184, 122, .14);
+  --tint-dist: rgba(255, 92, 122, .14);
+  --idle: rgba(27, 22, 64, .08);
+  --blur: blur(22px) saturate(1.6);
+  --aurora-1: #B7A6FF; --aurora-2: #8FD3FF; --aurora-3: #9DF0CF; --aurora-4: #FFB3C7;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root[data-style="glass"]:not([data-theme="light"]) {
+    --canvas: #0C0A1F;
+    --surface: rgba(30, 26, 68, .55);
+    --glass: rgba(28, 24, 64, .5);
+    --glass-strong: rgba(36, 31, 80, .72);
+    --glass-edge: rgba(255, 255, 255, .12);
+    --glass-shadow: 0 1px 0 rgba(255, 255, 255, .08) inset, 0 24px 60px -24px rgba(0, 0, 0, .7);
+    --rule: rgba(255, 255, 255, .08);
+    --row-hover: rgba(139, 113, 255, .1);
+    --row-selected: rgba(139, 113, 255, .18);
+    --tint-focus: rgba(139, 113, 255, .18);
+    --tint-tracked: rgba(70, 150, 255, .16);
+    --tint-prod: rgba(47, 213, 151, .15);
+    --tint-dist: rgba(255, 117, 144, .16);
+    --idle: rgba(255, 255, 255, .08);
+    --aurora-1: #5B3FD9; --aurora-2: #1F5FC4; --aurora-3: #0E8F78; --aurora-4: #A0336A;
+  }
+}
+
+/* ---------------------------------------------------------------- aurora background */
+
+:root[data-style="glass"] body { background: var(--canvas); }
+:root[data-style="glass"] body::before {
+  content: ""; position: fixed; inset: -20vmax; z-index: -1; pointer-events: none;
+  background:
+    radial-gradient(38vmax 38vmax at 18% 22%, var(--aurora-1), transparent 62%),
+    radial-gradient(34vmax 34vmax at 82% 18%, var(--aurora-2), transparent 60%),
+    radial-gradient(40vmax 40vmax at 70% 82%, var(--aurora-3), transparent 62%),
+    radial-gradient(30vmax 30vmax at 20% 85%, var(--aurora-4), transparent 60%);
+  filter: blur(40px);
+  opacity: .85;
+  animation: aurora-drift 40s ease-in-out infinite alternate;
+}
+@keyframes aurora-drift {
+  to { transform: translate3d(3vmax, -2vmax, 0) rotate(8deg) scale(1.05); }
+}
+
+/* ---------------------------------------------------------------- frosted panels */
+
+:root[data-style="glass"] .today,
+:root[data-style="glass"] .card,
+:root[data-style="glass"] .focus-hero,
+:root[data-style="glass"] .tabs,
+:root[data-style="glass"] .range,
+:root[data-style="glass"] .user-pick select,
+:root[data-style="glass"] .icon-btn,
+:root[data-style="glass"] .picker {
+  background-color: var(--glass);
+  -webkit-backdrop-filter: var(--blur);
+  backdrop-filter: var(--blur);
+  border: 1px solid var(--glass-edge);
+  box-shadow: var(--glass-shadow);
+}
+:root[data-style="glass"] .today { background-color: var(--glass-strong); border-radius: 34px; }
+:root[data-style="glass"] .card { border-radius: 26px; }
+:root[data-style="glass"] .topbar { background: transparent; -webkit-backdrop-filter: none; backdrop-filter: none; }
+
+/* stat tiles: tinted glass */
+:root[data-style="glass"] .tile {
+  -webkit-backdrop-filter: var(--blur);
+  backdrop-filter: var(--blur);
+  border: 1px solid var(--glass-edge);
+  box-shadow: var(--glass-shadow);
+  border-radius: 24px;
+}
+:root[data-style="glass"] .tile-focus { background: linear-gradient(140deg, var(--tint-focus), var(--glass)); }
+:root[data-style="glass"] .tile-tracked { background: linear-gradient(140deg, var(--tint-tracked), var(--glass)); }
+:root[data-style="glass"] .tile-prod { background: linear-gradient(140deg, var(--tint-prod), var(--glass)); }
+:root[data-style="glass"] .tile-dist { background: linear-gradient(140deg, var(--tint-dist), var(--glass)); }
+
+/* chips, small boxes, inputs: lighter glass */
+:root[data-style="glass"] .chip,
+:root[data-style="glass"] .goal-edit,
+:root[data-style="glass"] .fs-stat,
+:root[data-style="glass"] .fs-list li,
+:root[data-style="glass"] .blocked-chips li.empty-chip,
+:root[data-style="glass"] .picker-search,
+:root[data-style="glass"] .formula,
+:root[data-style="glass"] code {
+  background: color-mix(in srgb, var(--glass-strong) 60%, transparent);
+  border: 1px solid var(--glass-edge);
+}
+:root[data-style="glass"] .step,
+:root[data-style="glass"] .durations button,
+:root[data-style="glass"] .app-toggle,
+:root[data-style="glass"] table select {
+  background: var(--glass-strong);
+  border-color: var(--glass-edge);
+}
+:root[data-style="glass"] .durations button.active { background: var(--brand-soft); border-color: var(--brand); }
+
+/* goal ring: soft glow on the progress */
+:root[data-style="glass"] .ring-fill { filter: drop-shadow(0 0 10px color-mix(in srgb, var(--productive) 55%, transparent)); }
+:root[data-style="glass"] .ring-track { stroke: color-mix(in srgb, var(--productive) 14%, transparent); }
+
+/* active tab and main button: glowing violet glass */
+:root[data-style="glass"] .tabs button.active,
+:root[data-style="glass"] .btn-focus {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--brand) 92%, #fff), var(--brand));
+  box-shadow: 0 1px 0 rgba(255, 255, 255, .35) inset, 0 10px 26px -10px color-mix(in srgb, var(--brand) 80%, transparent);
+}
+:root[data-style="glass"] .range button.active { background: color-mix(in srgb, var(--brand) 16%, transparent); }
+
+/* live focus panel: violet glass instead of a flat gradient */
+:root[data-style="glass"] .focus-hero.is-live {
+  background: linear-gradient(150deg, color-mix(in srgb, var(--brand) 78%, transparent), color-mix(in srgb, #3B1FB0 70%, transparent));
+  border-color: rgba(255, 255, 255, .28);
+}
+:root[data-style="glass"] .live-stats > div { background: rgba(255, 255, 255, .16); border: 1px solid rgba(255, 255, 255, .22); }
+
+/* tables sit on glass: no hard rules, softer lines */
+:root[data-style="glass"] th { border-bottom-color: var(--rule); }
+:root[data-style="glass"] td { border-bottom-color: var(--rule); }
+
+/* time ribbon and timelines: glassy pills */
+:root[data-style="glass"] .ribbon span,
+:root[data-style="glass"] .timeline .seg { box-shadow: 0 1px 0 rgba(255, 255, 255, .35) inset; }
+:root[data-style="glass"] .timeline { border: 1px solid var(--glass-edge); }
+
+/* dialog backdrop */
+:root[data-style="glass"] .picker::backdrop { background: rgba(20, 14, 60, .35); backdrop-filter: blur(6px); }
+
+/* ---------------------------------------------------------------- mobile */
+
+@media (max-width: 760px) {
+  /* The top bar must not get a backdrop-filter here: it would become the
+     containing block of the fixed bottom tab bar (see styles.css). */
+  :root[data-style="glass"] .topbar { background: transparent; }
+  :root[data-style="glass"] .tabs { background-color: var(--glass-strong); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root[data-style="glass"] body::before { animation: none; }
+}
+
+/* Browsers without backdrop-filter: fall back to near-solid panels. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  :root[data-style="glass"] { --glass: rgba(255, 255, 255, .92); --glass-strong: rgba(255, 255, 255, .96); }
+}
+
+/* The Start-focus chip is a button, not a label: keep it violet. */
+:root[data-style="glass"] .chip.chip-focus {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--brand) 92%, #fff), var(--brand));
+  border-color: rgba(255, 255, 255, .35);
+  color: #fff;
+}
+:root[data-style="glass"] .chip.chip-focus.is-live { background: color-mix(in srgb, var(--productive) 22%, var(--glass-strong)); color: var(--fg); }
+
+/* Sticky top bar: frosted on desktop so content scrolling underneath
+   stays readable. (On phones it must stay without backdrop-filter.) */
+@media (min-width: 761px) {
+  :root[data-style="glass"] .topbar {
+    background: color-mix(in srgb, var(--canvas) 55%, transparent);
+    -webkit-backdrop-filter: blur(18px) saturate(1.5);
+    backdrop-filter: blur(18px) saturate(1.5);
+    border-bottom: 1px solid var(--glass-edge);
+  }
+}

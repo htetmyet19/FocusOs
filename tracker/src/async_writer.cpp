@@ -54,6 +54,9 @@ void AsyncDbWriter::closeSession(std::int64_t sessionId, TimePoint end) { enqueu
 void AsyncDbWriter::insertActivity(const std::vector<ActivityRecord>& rows) { if (!rows.empty()) enqueue(rows); }
 void AsyncDbWriter::insertIdle(const IdlePeriod& period) { enqueue(period); }
 void AsyncDbWriter::insertProcessSamples(const std::vector<ProcessSample>& rows) { if (!rows.empty()) enqueue(rows); }
+void AsyncDbWriter::insertFocusBlock(const FocusBlock& block) { enqueue(block); }
+void AsyncDbWriter::updateLive(const LiveStatus& status) { enqueue(status); }
+void AsyncDbWriter::clearLive(std::int64_t sessionId) { enqueue(ClearLiveCmd{sessionId}); }
 
 // ---- writer thread ---------------------------------------------------------
 
@@ -63,6 +66,9 @@ void AsyncDbWriter::execute(const Command& cmd) {
         [&](const IdlePeriod& p)                     { db_.insertIdle(p); },
         [&](const std::vector<ProcessSample>& rows)  { db_.insertProcessSamples(rows); },
         [&](const CloseSessionCmd& c)                { db_.closeSession(c.sessionId, c.end); },
+        [&](const FocusBlock& b)                     { db_.insertFocusBlock(b); },
+        [&](const LiveStatus& s)                     { db_.updateLive(s); },
+        [&](const ClearLiveCmd& c)                   { db_.clearLive(c.sessionId); },
     }, cmd);
 }
 

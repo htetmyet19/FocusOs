@@ -52,6 +52,24 @@ struct ProcessSample {
     bool          isForeground   = false;
 };
 
+// What a running session is doing right now (the still-open window).
+struct LiveStatus {
+    std::int64_t sessionId = 0;
+    std::string  processName;     // empty = no window
+    std::string  windowTitle;
+    TimePoint    since;           // when this window came to the front (or idle began)
+    TimePoint    updatedAt;
+    bool         idle = false;
+};
+
+// Focus Mode pushed a blocked app away.
+struct FocusBlock {
+    std::int64_t sessionId = 0;
+    TimePoint    at;
+    std::string  processName;   // lower-case
+    std::string  action = "minimised";   // "minimised" | "closed" | "terminated"
+};
+
 struct Session {
     std::int64_t             id        = 0;
     std::int64_t             userId    = 0;

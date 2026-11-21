@@ -104,6 +104,7 @@ activity_log ──1:1── ai_predictions        title_training_samples
 - **Effective category** of an activity (view `vw_activity`): the user's own category for the app → the AI label for that row → the app's default. The order is one `COALESCE` and is a deliberate design decision: with this order, marking Chrome *productive* also makes YouTube tabs productive.
 - **Constraints** do the validation: `CHECK` on times, PIDs, CPU %, confidence; foreign keys with `ON DELETE CASCADE`; lower-case process names.
 - **Views**: `vw_session_productivity`, `vw_session_app_usage`, `vw_daily_productivity`, `vw_foreground_vs_cpu`, `vw_background_cpu`.
+- **Focus sessions**: `sessions.planned_minutes` (completed vs ended early), `focus_blocks` (every app Focus Mode pushed away) and `session_live` (one row per running session with the window in front right now, upserted every 5 s and deleted at stop, because `activity_log` only gets a row once you switch away).
 - **Transactions**: batches of activity rows and process samples are inserted atomically; the classifier writes its labels and audit rows in one transaction.
 
 ## 🚀 Getting started
@@ -125,7 +126,7 @@ powershell -ExecutionPolicy Bypass -File scripts\get_portable_postgres.ps1   # c
 powershell -ExecutionPolicy Bypass -File scripts\make_release.ps1            # dist\FocusOs-<date>.zip (~32 MB)
 ```
 
-The zip holds the project files, `pgsql\` and the built tracker. `config.ini`, passwords and your data are never included.
+The zip holds the project files, `pgsql\` and the built tracker. `config.ini`, passwords and your data are never included. The full checklist, including testing the zip and publishing it on GitHub, is in [RELEASING.md](RELEASING.md).
 
 ### Developer setup with an installed PostgreSQL
 
@@ -193,23 +194,27 @@ pip install -r requirements.txt
 python server.py        # http://127.0.0.1:8000
 ```
 
-**Focus mode tab:** press **Add apps** to choose from the apps installed on this PC (Start menu apps and Microsoft Store apps, found by `dashboard/list_installed_apps.ps1`; Windows' own tools are left out), remove one with ×, then pick 15, 25, 50 or 90 minutes and press **Start focus**. Only installed apps can be added. The dashboard starts the tracker in the background with `--focus --minutes N` and shows a countdown; **End now** stops it cleanly. Write requests only accept JSON from the dashboard's own page, so other websites cannot start sessions or change your block list.
+**Focus mode tab:** press **Add apps** to choose from the apps installed on this PC (Start menu apps and Microsoft Store apps, found by `dashboard/list_installed_apps.ps1`; Windows' own tools are left out), remove one with ×, then pick 15, 25, 50 or 90 minutes and press **Start focus**. Only installed apps can be added. The dashboard starts the tracker in the background with `--focus --minutes N` and shows a countdown with live stats (time productive and distracted, apps pushed away, the app in front, a timeline); **End now** stops it cleanly. Afterwards a summary shows the focus score, whether you completed or ended early, the apps you used and every blocked attempt, and **Focus history** lists earlier sessions. Write requests only accept JSON from the dashboard's own page, so other websites cannot start sessions or change your block list.
 
 </details>
 
 <details>
 <summary><b>4. Train and run the title classifier</b></summary>
 
-Add labelled examples to `title_training_samples` (labels `productive`, `neutral`, `distracting`; at least 15, ideally 20+ distinct titles), then:
+The classifier labels browser tabs from their window title (a YouTube lecture is productive, a YouTube prank video is distracting).
 
 ```powershell
-pip install scikit-learn joblib "psycopg[binary]"
-python ai\title_classifier.py train                # prints held-out accuracy vs a baseline
-python ai\title_classifier.py classify             # labels new browser rows (≥ 70% confidence)
+pip install -r ai\requirements.txt
+python ai\demo_data.py all                         # optional: demo training titles + a "Demo student" (user 99) with 2 weeks of activity
+python ai\title_classifier.py train                # compares 6 models, validates honestly, writes ai\model_report.md
+python ai\title_classifier.py classify             # labels new browser rows when confident enough
 python ai\title_classifier.py classify --recheck   # re-label everything after retraining
+python ai\demo_data.py reset                       # remove all demo data again
 ```
 
-Every prediction is stored in `ai_predictions` (also the ones not applied), so accuracy can be audited later.
+**How the model is chosen:** titles are cleaned (browser suffixes removed), then a majority baseline, Naive Bayes, Complement NB, logistic regression and a calibrated linear SVM (word + character n-grams) are compared with cross-validation. Two scores are reported: *known sites* (new titles from sites seen in training) and *unseen sites* (folds grouped by template, so the model is tested on sites it has never seen). The headline estimate comes from **nested** grouped cross-validation, so picking the winner never sees its own test data. The confidence threshold is the lowest that keeps precision ≥ 90%; below it a tab keeps its app's default category. A plain random split is shown only to make visible how much it would overstate the score. Details, confusion matrix and the model's worst mistakes are in [`ai/model_report.md`](ai/model_report.md).
+
+Your own labels go in `title_training_samples` with `source = 'user'`; train on them alone with `--source user`. Demo titles (`source = 'demo'`) prove the pipeline works but say nothing about accuracy on your real browsing. Every prediction is stored in `ai_predictions` (also the ones not applied), so accuracy can be audited later.
 
 </details>
 
