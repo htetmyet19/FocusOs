@@ -8,7 +8,10 @@ const state = { user: null, range: "7d", data: null, charts: {} };
 const $ = (sel) => document.querySelector(sel);
 const fmtH = (h) => `${h.toFixed(1)} h`;
 const fmtTs = (iso) => iso ? iso.replace("T", " ").replace("Z", "") : "";
-const badge = (c) => `<span class="badge ${c}">${c}</span>`;
+// Escape anything from the database before it goes into innerHTML: window titles
+// come from web pages, so a page title like "<img onerror=...>" must not run.
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
+const badge = (c) => `<span class="badge ${esc(c)}">${esc(c)}</span>`;
 const scoreCls = (s) => s >= 70 ? "hi" : s >= 40 ? "mid" : "lo";
 
 async function api(path, opts) {
@@ -47,7 +50,7 @@ async function init() {
   try {
     const users = await api("/api/users");
     const sel = $("#user");
-    sel.innerHTML = users.map(u => `<option value="${u.user_id}">${u.name} (id ${u.user_id})</option>`).join("");
+    sel.innerHTML = users.map(u => `<option value="${esc(u.user_id)}">${esc(u.name)} (id ${esc(u.user_id)})</option>`).join("");
     state.user = users[0]?.user_id ?? 1;
     sel.onchange = () => { state.user = +sel.value; load(); };
   } catch (e) {
@@ -73,14 +76,16 @@ async function init() {
 async function load() {
   $("#status").textContent = "Loading…";
   try {
-    const [summary, cats] = await Promise.all([
+    const [summary, cats, procs] = await Promise.all([
       api(`/api/summary?user=${state.user}&range=${state.range}`),
       api(`/api/categories?user=${state.user}`),
+      api(`/api/processes?user=${state.user}&range=${state.range}`),
     ]);
     state.data = summary;
     renderOverview(summary);
     renderSessions(summary);
     renderApps(summary);
+    renderProcesses(procs);
     renderSettings(cats);
     $("#status").textContent = `Updated ${new Date().toLocaleTimeString()}`;
   } catch (e) {
@@ -145,8 +150,8 @@ function renderSessions(d) {
   const tb = $("#sessions-table tbody");
   if (!d.sessions.length) { tb.innerHTML = `<tr><td colspan="11" class="empty">No sessions in this range. Try a longer range.</td></tr>`; return; }
   tb.innerHTML = d.sessions.map(s => `
-    <tr class="clickable" data-id="${s.session_id}">
-      <td>${s.session_id}</td><td>${fmtTs(s.start_time)}</td><td>${s.duration_min} min</td><td>${mix(s)}</td>
+    <tr class="clickable" data-id="${esc(s.session_id)}">
+      <td>${esc(s.session_id)}</td><td>${esc(fmtTs(s.start_time))}</td><td>${s.duration_min} min</td><td>${mix(s)}</td>
       <td>${s.productive_min}</td><td>${s.neutral_min}</td><td>${s.distracting_min}</td><td>${s.idle_min}</td>
       <td>${s.switches}</td><td>${s.focus_mode ? "on" : "off"}</td>
       <td class="score ${scoreCls(s.focus_score)}">${s.focus_score}</td>
@@ -192,17 +197,44 @@ function renderApps(d) {
   });
   const tb = $("#recent-table tbody");
   tb.innerHTML = d.recent.length ? d.recent.map(r => `
-    <tr><td>${fmtTs(r.start_time)}</td><td><code>${r.process_name}</code></td>
-    <td class="title" title="${r.window_title ?? ""}">${r.window_title ?? ""}</td>
-    <td>${badge(r.category)}</td><td>${Math.round(r.seconds)}</td></tr>`).join("")
+    <tr><td>${esc(fmtTs(r.start_time))}</td><td><code>${esc(r.process_name)}</code></td>
+    <td class="title" title="${esc(r.window_title)}">${esc(r.window_title)}</td>
+    <td>${badge(r.category)}${r.category_source === "default" ? "" : ` <span class="small">(${esc(r.category_source)})</span>`}</td><td>${Math.round(r.seconds)}</td></tr>`).join("")
     : `<tr><td colspan="5" class="empty">Nothing recorded yet.</td></tr>`;
+}
+
+const fmtBytes = (b) => b == null ? "" : b >= 2 ** 30 ? `${(b / 2 ** 30).toFixed(1)} GB` : `${Math.round(b / 2 ** 20)} MB`;
+const num = (v, d = 1) => v == null ? "" : (+v).toFixed(d);
+
+function renderProcesses(p) {
+  const bg = p.background;
+  chart("chart-bg-cpu", {
+    type: "bar",
+    data: { labels: bg.map(r => r.process_name),
+            datasets: [{ label: "CPU seconds while in background", data: bg.map(r => r.background_cpu_seconds), backgroundColor: COLOURS.distracting }] },
+    options: { indexAxis: "y", plugins: { legend: { display: false } }, scales: { x: { title: { display: true, text: "CPU seconds" } } } },
+  });
+
+  const fgBody = $("#fgcpu-table tbody");
+  fgBody.innerHTML = p.foreground_vs_cpu.length ? p.foreground_vs_cpu.map(r => {
+    const fgMin = (r.foreground_seconds || 0) / 60;
+    const perMin = fgMin > 0 ? num(r.cpu_seconds / fgMin, 2) : "never in front";
+    return `<tr><td><code>${esc(r.process_name)}</code></td><td>${num(fgMin)}</td><td>${num(r.cpu_seconds, 2)}</td>
+      <td>${esc(perMin)}</td><td>${num(r.peak_cpu_percent, 2)}</td><td>${fmtBytes(r.peak_working_set_bytes)}</td></tr>`;
+  }).join("") : `<tr><td colspan="6" class="empty">No process snapshots in this range. Run the tracker with --proc.</td></tr>`;
+
+  const bgBody = $("#bg-table tbody");
+  bgBody.innerHTML = bg.length ? bg.map(r => `
+    <tr><td><code>${esc(r.process_name)}</code></td><td>${num(r.background_cpu_seconds, 2)}</td><td>${num(r.peak_cpu_percent, 2)}</td>
+    <td>${num(r.max_threads, 0)}</td><td>${esc(r.priority_class)}</td><td>${fmtBytes(r.peak_working_set_bytes)}</td></tr>`).join("")
+    : `<tr><td colspan="6" class="empty">No background CPU use recorded.</td></tr>`;
 }
 
 function renderSettings(cats) {
   const tb = $("#cat-table tbody");
   tb.innerHTML = cats.map(c => `
-    <tr data-app="${c.app_id}">
-      <td><code>${c.process_name}</code></td><td>${badge(c.default_category)}</td>
+    <tr data-app="${esc(c.app_id)}">
+      <td><code>${esc(c.process_name)}</code></td><td>${badge(c.default_category)}</td>
       <td><select class="cat-select">${CATS.map(x => `<option ${x === c.effective_category ? "selected" : ""}>${x}</option>`).join("")}</select></td>
       <td>${c.overridden ? `<button class="reset">Reset</button>` : ""}</td>
     </tr>`).join("");
@@ -222,7 +254,7 @@ function renderSettings(cats) {
   };
   const blocked = cats.filter(c => c.effective_category === "distracting").map(c => c.process_name);
   $("#blocked-list").textContent = blocked.join(", ") || "none";
-  $("#focus-cmd").textContent = `focus_tracker.exe --db focus.db --user ${state.user} --focus`;
+  $("#focus-cmd").textContent = `focus_tracker.exe --user ${state.user} --focus`;
 }
 
 init();

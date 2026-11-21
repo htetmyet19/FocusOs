@@ -2,6 +2,9 @@
 
 namespace ft {
 
+SessionManager::SessionManager(IDbClient& db, std::int64_t userId, bool focusMode)
+    : SessionManager(db, userId, focusMode, Config{}) {}
+
 SessionManager::SessionManager(IDbClient& db, std::int64_t userId, bool focusMode, Config cfg)
     : db_(db), cfg_(cfg) {
     session_.userId    = userId;
@@ -40,18 +43,34 @@ void SessionManager::onSample(const WindowInfo& win, double idleSeconds, TimePoi
                                     std::chrono::duration<double>(idleSeconds));
         if (began < currentStart_) began = currentStart_;
         closeCurrentActivity(began);
+        candidate_.reset();
         idle_      = true;
         idleStart_ = began;
     } else if (!idleNow && idle_) {
         db_.insertIdle({session_.id, idleStart_, now});
         idle_ = false;
+        candidate_.reset();
         openActivity(win, now);
     } else if (!idle_) {
         if (!current_) {
+            // Nothing open (start of session, or after the lock screen): no
+            // previous activity to protect, so start immediately.
+            candidate_.reset();
             openActivity(win, now);
-        } else if (*current_ != win) {
-            closeCurrentActivity(now);
-            openActivity(win, now);
+        } else if (*current_ == win) {
+            candidate_.reset();                       // the blip ended; keep going
+        } else {
+            if (!candidate_ || *candidate_ != win) {  // a new contender appears
+                candidate_      = win;
+                candidateSince_ = now;
+            }
+            if (secondsBetween(candidateSince_, now) >= cfg_.minSwitchSec) {
+                // Confirmed: switch, backdated to when it first appeared.
+                const WindowInfo next = *candidate_;
+                closeCurrentActivity(candidateSince_);
+                openActivity(next, candidateSince_);
+                candidate_.reset();
+            }
         }
     }
 
