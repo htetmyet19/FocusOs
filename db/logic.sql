@@ -9,11 +9,30 @@ DROP VIEW IF EXISTS vw_background_cpu, vw_foreground_vs_cpu, vw_daily_productivi
                     vw_session_app_usage, vw_session_productivity, vw_activity CASCADE;
 
 
+-- Website rule for a browser tab title: the user's own rules first, then the
+-- built-in ones; a longer (more specific) pattern beats a shorter one.
+-- STABLE: reads tables but does not change them, so the planner may cache it.
+CREATE OR REPLACE FUNCTION site_rule_category(p_user BIGINT, p_title TEXT)
+RETURNS SMALLINT
+LANGUAGE sql STABLE AS $$
+    SELECT r.category_id
+    FROM site_rules r
+    WHERE (r.user_id = p_user OR r.user_id IS NULL)
+      AND p_title IS NOT NULL
+      AND strpos(lower(p_title), r.pattern) > 0
+    ORDER BY (r.user_id IS NULL), length(r.pattern) DESC
+    LIMIT 1
+$$;
+
+
 -- Every activity row with its *effective* category.
--- Priority (a design decision, change the COALESCE order to change it):
---   1. the user's own category for the app   (explicit user intent)
---   2. the AI label for this particular row   (e.g. a YouTube tab in Chrome)
---   3. the app's default category
+-- Priority: the most specific information wins (a design decision; change
+-- the COALESCE order to change it):
+--   1. a website rule matching this browser tab's title  ("instagram" -> distracting)
+--   2. the AI label for this particular row              (a YouTube lecture vs a prank video)
+--   3. the user's own category for the whole app
+--   4. the app's default category
+-- So marking Chrome "productive" no longer makes Instagram productive too.
 CREATE VIEW vw_activity AS
 SELECT
     l.log_id,
@@ -27,8 +46,9 @@ SELECT
     EXTRACT(EPOCH FROM (l.end_time - l.start_time))::numeric AS seconds,
     c.label AS category,
     CASE
-        WHEN u.category_id IS NOT NULL    THEN 'user'
+        WHEN sr.cat IS NOT NULL           THEN 'site'
         WHEN l.ai_category_id IS NOT NULL THEN 'ai'
+        WHEN u.category_id IS NOT NULL    THEN 'user'
         ELSE 'default'
     END AS category_source
 FROM activity_log AS l
@@ -36,8 +56,11 @@ JOIN sessions     AS s ON s.session_id = l.session_id
 JOIN applications AS a ON a.app_id = l.app_id
 LEFT JOIN user_app_category AS u
        ON u.app_id = l.app_id AND u.user_id = s.user_id
+LEFT JOIN LATERAL (
+    SELECT site_rule_category(s.user_id, l.window_title) AS cat
+) AS sr ON a.is_browser
 JOIN categories AS c
-  ON c.category_id = COALESCE(u.category_id, l.ai_category_id, a.default_category);
+  ON c.category_id = COALESCE(sr.cat, l.ai_category_id, u.category_id, a.default_category);
 
 
 -- Report 1: totals and productivity per session.

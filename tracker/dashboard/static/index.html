@@ -9,12 +9,22 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Figtree:wght@400;500;600;700&display=swap">
   <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="theme-glass.css">
   <script>
-    // Theme preview: ?theme=glass loads the glass theme on top of the default.
-    if (new URLSearchParams(location.search).get("theme") === "glass") {
-      document.documentElement.dataset.style = "glass";
-      document.write('<link rel="stylesheet" href="theme-glass.css">');
-    }
+    // Theme: glass by default, classic on request. Set before the page draws,
+    // so it never flashes the other theme. ?theme=classic|glass overrides the
+    // saved choice. theme-glass.css only applies under data-style="glass".
+    (function () {
+      var asked = new URLSearchParams(location.search).get("theme");
+      var saved = null;
+      try { saved = localStorage.getItem("focusos.theme"); } catch (e) { /* storage blocked */ }
+      var style = asked === "classic" || asked === "glass" ? asked : (saved === "classic" ? "classic" : "glass");
+      document.documentElement.dataset.style = style;
+      // Light / dark: "auto" (default) follows Windows; light or dark forces it.
+      var mode = null;
+      try { mode = localStorage.getItem("focusos.mode"); } catch (e) { /* storage blocked */ }
+      if (mode === "light" || mode === "dark") document.documentElement.dataset.theme = mode;
+    })();
   </script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"
           integrity="sha384-9nhczxUqK87bcKHh20fSQcTGD4qq5GhayNYSYWqwBkINBhOfQLg/P5HG5lF1urn4"
@@ -60,10 +70,16 @@
         <button data-range="30d">30 days</button>
         <button data-range="all">All</button>
       </div>
-      <label class="user-pick">
-        <span class="visually-hidden">User</span>
-        <select id="user"></select>
-      </label>
+      <button id="theme-toggle" class="theme-toggle" aria-label="Switch theme" title="Switch between the glass and classic look">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.8 4.6L18.5 9l-4.7 1.8L12 15.5l-1.8-4.7L5.5 9l4.7-1.4z"/><path d="M18 15l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z"/></svg>
+        <span id="theme-name">Glass</span>
+      </button>
+      <button id="mode-toggle" class="theme-toggle" aria-label="Light or dark mode" title="Light or dark: Auto follows Windows">
+        <svg class="ic-auto" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" fill="none" stroke-width="2"/><path d="M12 4a8 8 0 0 1 0 16z" stroke="none"/></svg>
+        <svg class="ic-light" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M4.9 19.1l1.8-1.8M17.3 6.7l1.8-1.8" fill="none" stroke-width="2" stroke-linecap="round"/></svg>
+        <svg class="ic-dark" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg>
+        <span id="mode-name">Auto</span>
+      </button>
       <button id="refresh" class="icon-btn" title="Refresh" aria-label="Refresh">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg>
       </button>
@@ -145,35 +161,68 @@
       </section>
 
       <div class="grid grid-wide">
-        <section class="card"><h2 class="card-title">Minutes per day</h2><div class="chart-box"><canvas id="chart-daily"></canvas></div></section>
-        <section class="card"><h2 class="card-title">Best hours to focus</h2><div class="chart-box"><canvas id="chart-hour"></canvas></div></section>
+        <section class="card chart-card">
+          <h2 class="card-title">How your days went</h2>
+          <p class="takeaway" id="daily-takeaway"></p>
+          <div class="chart-box"><canvas id="chart-daily" role="img" aria-labelledby="daily-takeaway"></canvas></div>
+          <p class="chart-help">Each bar is one day; taller means more time on the computer. Green is work apps, grey is neutral, red is distracting. Point at a bar for exact times.</p>
+        </section>
+        <section class="card chart-card">
+          <h2 class="card-title">When you focus best</h2>
+          <p class="takeaway" id="daypart-takeaway"></p>
+          <ul class="meter-list" id="daypart-list"></ul>
+          <p class="chart-help">Average focus score of the sessions you started in each part of the day, in your local time. Longer bar = better focus.</p>
+        </section>
       </div>
-      <section class="card"><h2 class="card-title">Focus score per session</h2><div class="chart-box short"><canvas id="chart-trend"></canvas></div></section>
+      <section class="card chart-card">
+        <h2 class="card-title">Is your focus getting better?</h2>
+        <p class="takeaway" id="trend-takeaway"></p>
+        <div class="chart-box short"><canvas id="chart-trend" role="img" aria-labelledby="trend-takeaway"></canvas></div>
+        <p class="chart-help">Each dot is one session, oldest on the left. The focus score runs from 0 to 100: 100 means all your time was in work apps with little switching. Above 70 is great; below 40 means you were often distracted.</p>
+      </section>
     </section>
 
     <!-- Sessions -->
     <section id="tab-sessions" class="tab" aria-labelledby="h-sessions">
       <header class="page-head">
         <h1 id="h-sessions">Sessions</h1>
-        <p>Every time you run the tracker is one session. Tap a session to replay it.</p>
+        <p>Every time you run the tracker is one session, including focus sessions. Tap a session to replay it.</p>
       </header>
+      <div class="seg-filter" id="session-filter" role="radiogroup" aria-label="Which sessions to show">
+        <button type="button" role="radio" data-filter="all" aria-checked="true" class="active">All sessions</button>
+        <button type="button" role="radio" data-filter="focus" aria-checked="false">Focus sessions only</button>
+      </div>
       <section class="card flush scroll">
         <table id="sessions-table">
           <thead><tr>
             <th>ID</th><th>Started (UTC)</th><th>Duration</th><th>Mix</th><th class="num">Productive</th><th class="num">Neutral</th>
-            <th class="num">Distracting</th><th class="num">Idle</th><th class="num">Switches</th><th>Focus mode</th><th class="num">Score</th>
+            <th class="num">Distracting</th><th class="num">Idle</th><th class="num">Switches</th><th>Focus</th><th class="num">Blocked</th><th class="num">Score</th>
           </tr></thead>
           <tbody></tbody>
         </table>
       </section>
       <section class="card" id="session-detail" hidden>
-        <h2 class="card-title">Session <span id="detail-id"></span></h2>
+        <div class="card-head">
+          <h2 class="card-title">Session <span id="detail-id"></span></h2>
+          <span class="outcome" id="detail-outcome" hidden></span>
+        </div>
+        <p class="muted fs-when" id="detail-when"></p>
         <div class="timeline" id="timeline"></div>
         <div class="legend">
           <span><i class="sw productive"></i>Productive</span>
           <span><i class="sw neutral"></i>Neutral</span>
           <span><i class="sw distracting"></i>Distracting</span>
           <span><i class="sw idle"></i>Idle</span>
+        </div>
+        <div class="fs-columns">
+          <div>
+            <h3 class="fs-sub">Apps you used</h3>
+            <ul class="fs-list" id="detail-apps"></ul>
+          </div>
+          <div>
+            <h3 class="fs-sub">Blocked attempts</h3>
+            <ul class="fs-list" id="detail-blocked"></ul>
+          </div>
         </div>
         <details>
           <summary>How is the score calculated?</summary>
@@ -196,6 +245,17 @@
           <thead><tr><th>Started (UTC)</th><th>App</th><th>Window title</th><th>Category</th><th class="num">Seconds</th></tr></thead>
           <tbody></tbody>
         </table>
+      </section>
+
+      <!-- Teach the AI (active learning) -->
+      <section class="card teach">
+        <div class="card-head">
+          <h2 class="card-title">Teach the AI</h2>
+          <button class="btn-add" id="retrain-btn">Retrain</button>
+        </div>
+        <p class="muted teach-intro">These are your browser tabs the AI is least sure about. Label a few, then press Retrain: the model learns most from the cases it finds hardest.</p>
+        <ul class="teach-list" id="teach-list" aria-live="polite"></ul>
+        <p class="ai-line" id="teach-status" role="status"></p>
       </section>
     </section>
 
@@ -232,16 +292,76 @@
       <section class="focus-hero" id="focus-hero">
         <div class="focus-idle" id="focus-idle">
           <h2 class="focus-heading">How long do you want to focus?</h2>
-          <div class="durations" id="durations" role="radiogroup" aria-label="Session length">
-            <button role="radio" data-min="15" aria-checked="false">15 min</button>
-            <button role="radio" data-min="25" aria-checked="true" class="active">25 min</button>
-            <button role="radio" data-min="50" aria-checked="false">50 min</button>
-            <button role="radio" data-min="90" aria-checked="false">90 min</button>
+
+          <!-- Timer wheels: scroll, drag, tap or use the arrow keys -->
+          <div class="wheel-picker" id="wheel-picker">
+            <div class="wheel-band" aria-hidden="true"></div>
+            <div class="wheel-col">
+              <div class="wheel" id="wheel-h" tabindex="0" role="spinbutton" aria-label="Hours"
+                   aria-valuemin="0" aria-valuemax="8" aria-valuenow="0"><ul></ul></div>
+              <span class="wheel-unit">hours</span>
+            </div>
+            <div class="wheel-col">
+              <div class="wheel" id="wheel-m" tabindex="0" role="spinbutton" aria-label="Minutes"
+                   aria-valuemin="0" aria-valuemax="59" aria-valuenow="25"><ul></ul></div>
+              <span class="wheel-unit">min</span>
+            </div>
           </div>
+          <div class="quick-picks" id="durations" aria-label="Quick picks">
+            <button type="button" data-min="15">15 min</button>
+            <button type="button" data-min="25">25 min</button>
+            <button type="button" data-min="50">50 min</button>
+            <button type="button" data-min="90">1 h 30</button>
+            <button type="button" data-min="120">2 h</button>
+          </div>
+          <p class="length-hint" id="length-hint"></p>
+
+          <!-- Breaks: one tap -->
+          <div class="breaks" id="breaks">
+            <p class="breaks-title" id="breaks-label">Breaks</p>
+            <div class="break-options" id="break-options" role="radiogroup" aria-labelledby="breaks-label">
+              <button type="button" role="radio" data-break="off">
+                <span class="bo-main">No breaks</span><span class="bo-sub">Focus straight through</span>
+              </button>
+              <button type="button" role="radio" data-break="25-5">
+                <span class="bo-main">5 min</span><span class="bo-sub">every 25 min</span>
+              </button>
+              <button type="button" role="radio" data-break="50-10">
+                <span class="bo-main">10 min</span><span class="bo-sub">every 50 min</span>
+              </button>
+              <button type="button" role="radio" data-break="90-15">
+                <span class="bo-main">15 min</span><span class="bo-sub">every 90 min</span>
+              </button>
+            </div>
+            <p class="break-note" id="break-note"></p>
+          </div>
+
+          <div class="plan" id="plan" aria-hidden="true"></div>
+          <p class="plan-text" id="plan-text"></p>
           <div class="on-block" role="radiogroup" aria-labelledby="on-block-label">
-            <span id="on-block-label">When a blocked app opens:</span>
-            <button role="radio" data-action="close" aria-checked="true" class="active">Close it</button>
-            <button role="radio" data-action="minimise" aria-checked="false">Minimise it</button>
+            <p class="on-block-title" id="on-block-label">If a blocked app opens</p>
+            <div class="on-block-options">
+              <button type="button" role="radio" data-action="close" aria-checked="true" class="active" tabindex="0">
+                <span class="ob-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="3"/><path d="M9.5 10l5 5M14.5 10l-5 5"/></svg>
+                </span>
+                <span class="ob-text">
+                  <span class="ob-name">Close it</span>
+                  <span class="ob-desc">Quits the app. Save your work first.</span>
+                </span>
+                <span class="ob-check" aria-hidden="true"></span>
+              </button>
+              <button type="button" role="radio" data-action="minimise" aria-checked="false" tabindex="-1">
+                <span class="ob-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="3"/><path d="M8 15h8"/></svg>
+                </span>
+                <span class="ob-text">
+                  <span class="ob-name">Minimise it</span>
+                  <span class="ob-desc">Hides the window. It keeps running.</span>
+                </span>
+                <span class="ob-check" aria-hidden="true"></span>
+              </button>
+            </div>
           </div>
           <button class="btn-focus" id="focus-start">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l11-6.5z"/></svg>
@@ -252,9 +372,15 @@
 
         <div class="focus-live" id="focus-live" hidden>
           <span class="live-dot" aria-hidden="true"></span>
-          <p class="focus-heading">Focusing</p>
-          <p class="countdown" id="countdown" aria-live="polite">25:00</p>
-          <div class="live-bar"><span id="live-bar-fill"></span></div>
+          <p class="focus-heading" id="live-heading">Focusing</p>
+          <div class="timer-wrap">
+            <svg class="timer-ring" id="timer-ring" viewBox="0 0 240 240" aria-hidden="true"></svg>
+            <div class="timer-center">
+              <p class="countdown" id="countdown" aria-live="polite">25:00</p>
+              <p class="timer-sub" id="phase-line"></p>
+              <p class="timer-ends" id="timer-ends"></p>
+            </div>
+          </div>
           <div class="live-stats" id="live-stats" aria-live="polite">
             <div><span class="ls-value" id="ls-prod">0 min</span><span class="ls-label">productive</span></div>
             <div><span class="ls-value" id="ls-dist">0 min</span><span class="ls-label">distracted</span></div>
@@ -309,15 +435,7 @@
             <ul class="fs-list" id="fs-blocked"></ul>
           </div>
         </div>
-      </section>
-
-      <!-- Focus history -->
-      <section class="card flush scroll" id="focus-history-card" hidden>
-        <h2 class="card-title pad">Focus history</h2>
-        <table id="focus-history">
-          <thead><tr><th>Started</th><th class="num">Length</th><th>Result</th><th class="num">Productive</th><th class="num">Blocked</th><th class="num">Score</th></tr></thead>
-          <tbody></tbody>
-        </table>
+        <p class="fs-more"><a href="#" id="fs-see-all">See all focus sessions in Sessions</a></p>
       </section>
 
       <!-- Blocked apps -->
@@ -349,6 +467,31 @@
         <ul class="picker-list" id="picker-list" aria-live="polite"></ul>
         <p class="picker-foot">Showing apps installed on this PC. Windows' own tools aren't listed.</p>
       </dialog>
+
+      <!-- Website rules: categorise browser tabs by site -->
+      <section class="card">
+        <h2 class="card-title">Websites in your browser</h2>
+        <p class="muted rules-intro">Browser tabs are judged by the website, not the browser. A rule below wins first; for other sites (like a YouTube video) the AI reads the tab title; otherwise the browser's own category applies.</p>
+        <form class="rule-form" id="rule-form" autocomplete="off">
+          <label class="visually-hidden" for="rule-pattern">Tab title contains</label>
+          <span class="rule-label">If the tab title contains</span>
+          <input id="rule-pattern" placeholder="e.g. youtube shorts, or paste a YouTube link" maxlength="300">
+          <label class="visually-hidden" for="rule-category">Category</label>
+          <select id="rule-category">
+            <option value="distracting">distracting</option>
+            <option value="productive">productive</option>
+            <option value="neutral">neutral</option>
+          </select>
+          <button type="submit" class="btn-add">Add rule</button>
+        </form>
+        <p class="form-msg" id="rule-msg" role="status"></p>
+        <ul class="rule-chips" id="my-rules" aria-label="Your rules"></ul>
+        <details class="builtin-rules">
+          <summary id="builtin-summary">Built-in rules</summary>
+          <ul class="rule-chips" id="builtin-rules"></ul>
+        </details>
+        <p class="ai-line" id="ai-line"></p>
+      </section>
 
       <!-- All apps -->
       <details class="card all-apps">

@@ -179,6 +179,11 @@ void PgDbClient::setPlannedMinutes(std::int64_t sessionId, int minutes) {
             {std::to_string(sessionId), std::to_string(minutes)});
 }
 
+void PgDbClient::setBreakPlan(std::int64_t sessionId, int everyMinutes, int breakMinutes) {
+    command(conn_, "UPDATE sessions SET break_every_min = $2::int, break_min = $3::int WHERE session_id = $1::bigint",
+            {std::to_string(sessionId), std::to_string(everyMinutes), std::to_string(breakMinutes)});
+}
+
 void PgDbClient::insertFocusBlock(const FocusBlock& b) {
     command(conn_,
             "INSERT INTO focus_blocks (session_id, blocked_at, app_id, action) "

@@ -20,7 +20,10 @@ TRACKER_EXE = Path(os.environ.get("FOCUS_TRACKER_EXE", TRACKER_DIR / "build" / "
 CONFIG_PATH = Path(os.environ.get("FOCUS_CONFIG", TRACKER_DIR / "config.ini"))
 LOG_PATH = TRACKER_DIR / "build" / "focus_session.log"
 
-ALLOWED_MINUTES = (15, 25, 50, 90)
+PRESET_MINUTES = (15, 25, 50, 90)        # quick picks in the dashboard; any length in range works
+MIN_MINUTES, MAX_MINUTES = 1, 480         # 1 minute to 8 hours
+MIN_BREAK_EVERY, MAX_BREAK_EVERY = 10, 120
+MIN_BREAK, MAX_BREAK = 1, 30
 
 _RUNNING_MUTEX = "Local\\FocusOs.Running"
 _STOP_EVENT = "Local\\FocusOs.Stop"
@@ -80,10 +83,43 @@ def _tracker_config() -> Path:
 ON_BLOCK_FLAGS = {"close": "--close", "minimise": None}
 
 
-def start(user_id: int, minutes: int, on_block: str = "close") -> dict:
+def break_plan(minutes: int, every: int, length: int) -> list[dict]:
+    """The session as blocks of focus and break, e.g. 90 / 10 every 50 ->
+    focus 0-50, break 50-60, focus 60-90. Matches BreakSchedule in the tracker:
+    a break is skipped if no focus time would come after it."""
+    if not every or not length:
+        return [{"kind": "focus", "start_min": 0, "end_min": minutes}]
+    out, t = [], 0
+    while t < minutes:
+        focus_end = min(t + every, minutes)
+        out.append({"kind": "focus", "start_min": t, "end_min": focus_end})
+        if focus_end + length >= minutes:     # nothing left after the break: just finish
+            if focus_end < minutes:
+                out[-1]["end_min"] = minutes
+            break
+        out.append({"kind": "break", "start_min": focus_end, "end_min": focus_end + length})
+        t = focus_end + length
+    return out
+
+
+def _check_length(minutes: int, break_every: int, break_min: int) -> None:
+    if not MIN_MINUTES <= minutes <= MAX_MINUTES:
+        raise FocusError(f"Pick a length between {MIN_MINUTES} and {MAX_MINUTES} minutes (8 hours).")
+    if bool(break_every) != bool(break_min):
+        raise FocusError("Set both how often to take a break and how long it lasts.")
+    if break_every:
+        if not MIN_BREAK_EVERY <= break_every <= MAX_BREAK_EVERY:
+            raise FocusError(f"Breaks can come every {MIN_BREAK_EVERY} to {MAX_BREAK_EVERY} minutes.")
+        if not MIN_BREAK <= break_min <= MAX_BREAK:
+            raise FocusError(f"A break can last {MIN_BREAK} to {MAX_BREAK} minutes.")
+        if break_every + break_min >= minutes:
+            raise FocusError("This session is too short for a break. Make it longer or turn breaks off.")
+
+
+def start(user_id: int, minutes: int, on_block: str = "close",
+          break_every: int = 0, break_min: int = 0) -> dict:
     global _session
-    if minutes not in ALLOWED_MINUTES:
-        raise FocusError(f"Choose one of {', '.join(map(str, ALLOWED_MINUTES))} minutes.")
+    _check_length(minutes, break_every, break_min)
     if on_block not in ON_BLOCK_FLAGS:
         raise FocusError("on_block must be 'close' or 'minimise'.")
     if not TRACKER_EXE.exists():
@@ -93,10 +129,12 @@ def start(user_id: int, minutes: int, on_block: str = "close") -> dict:
             raise FocusError("The tracker is already running. End that session first.")
         LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         log = open(LOG_PATH, "w", encoding="utf-8")
-        args = [str(TRACKER_EXE), "--config", str(_tracker_config()), "--user", str(user_id),
+        args = [str(TRACKER_EXE), "--config", str(_tracker_config()),
                 "--focus", "--minutes", str(minutes)]
         if ON_BLOCK_FLAGS[on_block]:
             args.append(ON_BLOCK_FLAGS[on_block])
+        if break_every:
+            args += ["--break-every", str(break_every), "--break", str(break_min)]
         proc = subprocess.Popen(
             args,
             cwd=str(TRACKER_DIR), stdout=log, stderr=subprocess.STDOUT,
@@ -104,7 +142,7 @@ def start(user_id: int, minutes: int, on_block: str = "close") -> dict:
         )
         log.close()   # the child keeps its own handle
         _session = {"proc": proc, "started": time.time(), "minutes": minutes, "user": user_id,
-                    "on_block": on_block}
+                    "on_block": on_block, "break_every": break_every, "break_min": break_min}
 
     # Give it a moment: a bad config or an unreachable database exits at once.
     for _ in range(30):
@@ -146,9 +184,18 @@ def status() -> dict:
 
     out = {"supported": True, "running": running, "focus": False, "minutes": None,
            "remaining_s": None, "started_here": False,
-           "tracker_found": TRACKER_EXE.exists(), "choices": list(ALLOWED_MINUTES)}
+           "tracker_found": TRACKER_EXE.exists(), "choices": list(PRESET_MINUTES),
+           "limits": {"minutes": [MIN_MINUTES, MAX_MINUTES], "break_every": [MIN_BREAK_EVERY, MAX_BREAK_EVERY],
+                      "break_min": [MIN_BREAK, MAX_BREAK]}}
     if running and s:
         elapsed = time.time() - s["started"]
+        plan = break_plan(s["minutes"], s["break_every"], s["break_min"])
+        now_min = elapsed / 60
+        current = next((p for p in plan if p["start_min"] <= now_min < p["end_min"]), plan[-1])
+        on_break = current["kind"] == "break"
         out.update(focus=True, started_here=True, minutes=s["minutes"], user=s["user"], on_block=s["on_block"],
-                   remaining_s=max(0, round(s["minutes"] * 60 - elapsed)))
+                   remaining_s=max(0, round(s["minutes"] * 60 - elapsed)),
+                   break_every=s["break_every"], break_min=s["break_min"], plan=plan,
+                   elapsed_s=round(elapsed), on_break=on_break,
+                   phase_left_s=max(0, round(current["end_min"] * 60 - elapsed)))
     return out

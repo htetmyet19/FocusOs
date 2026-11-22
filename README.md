@@ -40,13 +40,13 @@ Every 10 s, snapshots all running processes: PID, parent PID, threads, priority 
 <td valign="top">
 
 ### 🏷️ Rules + AI categories
-Apps have a default category; each user can override it. Browser tabs are classified by a **TF-IDF + Naive Bayes** model, applied only when it is at least 70% confident.
+Apps have a default category that you can change. Browser tabs are categorised per website: built-in and your own website rules first, then a **TF-IDF + Complement Naive Bayes** model that reads the tab title, applied only when it is confident enough.
 
 </td>
 <td valign="top">
 
 ### 🎯 Focus Mode
-Pick a length and press **Start focus** in the dashboard: any app on your block list is minimised the moment it comes to the front. Add or remove blocked apps right there. From the terminal: `--focus --minutes 25`.
+Turn the timer wheels to any length (1 minute to 8 hours), pick breaks if you want them, and press **Start focus** in the dashboard: any app on your block list is closed or minimised the moment it comes to the front, except during a break. Add or remove blocked apps right there. From the terminal: `--focus --minutes 90 --break-every 50 --break 10`.
 
 </td>
 </tr>
@@ -60,7 +60,7 @@ Pick a length and press **Start focus** in the dashboard: any app on your block 
 <td valign="top">
 
 ### 📊 Dashboard
-Flask + Chart.js: totals, focus score per session, a timeline of each session, top apps, foreground-vs-CPU and background processes, and per-user category settings.
+Flask + Chart.js: totals, focus score per session, a timeline of each session, top apps, foreground-vs-CPU and background processes, and your category settings. FocusOs is single-user: one PC, one person. Frosted-glass look by default (switch to **Classic** in the top bar) and **Auto / Light / Dark** colour mode; both choices are remembered in your browser.
 
 </td>
 </tr>
@@ -101,10 +101,11 @@ categories ──< applications ──< activity_log >── sessions >── us
 activity_log ──1:1── ai_predictions        title_training_samples
 ```
 
-- **Effective category** of an activity (view `vw_activity`): the user's own category for the app → the AI label for that row → the app's default. The order is one `COALESCE` and is a deliberate design decision: with this order, marking Chrome *productive* also makes YouTube tabs productive.
+- **Effective category** of an activity (view `vw_activity`): the most specific information wins: a **website rule** matching a browser tab's title (`site_rules`, e.g. "instagram" → distracting) → the **AI label** for that row (a YouTube lecture vs a prank video) → the user's own category for the whole app → the app's default. Website rules are matched by the stored function `site_rule_category()`, the user's own rules before built-in ones and longer patterns before shorter ones. The order is one `COALESCE`; with it, marking Chrome *productive* no longer makes Instagram productive.
+- **Browser tabs are categorised automatically:** rules apply instantly inside the database (also to the tab open right now), and the dashboard runs the AI on new browser rows every minute. Add your own rules in **Focus mode → Websites in your browser**. Windows only exposes the page *title*, not the URL, so a site is recognised by its name in the title (Instagram, Netflix, "#shorts"); for YouTube the AI reads the video title.
 - **Constraints** do the validation: `CHECK` on times, PIDs, CPU %, confidence; foreign keys with `ON DELETE CASCADE`; lower-case process names.
 - **Views**: `vw_session_productivity`, `vw_session_app_usage`, `vw_daily_productivity`, `vw_foreground_vs_cpu`, `vw_background_cpu`.
-- **Focus sessions**: `sessions.planned_minutes` (completed vs ended early), `focus_blocks` (every app Focus Mode pushed away) and `session_live` (one row per running session with the window in front right now, upserted every 5 s and deleted at stop, because `activity_log` only gets a row once you switch away).
+- **Focus sessions**: `sessions.planned_minutes` (completed vs ended early), `sessions.break_every_min` / `break_min` (the break plan), `focus_blocks` (every app Focus Mode pushed away) and `session_live` (one row per running session with the window in front right now, upserted every 5 s and deleted at stop, because `activity_log` only gets a row once you switch away).
 - **Transactions**: batches of activity rows and process samples are inserted atomically; the classifier writes its labels and audit rows in one transaction.
 
 ## 🚀 Getting started
@@ -171,12 +172,12 @@ CMake finds the newest PostgreSQL under `C:/Program Files/PostgreSQL` (or pass `
 ```text
 focus_tracker [options]
   --config <path>    INI file with a [database] section (default config.ini)
-  --user <id>        user id (default 1)
-  --name <name>      user display name
   --idle <sec>       idle threshold in seconds (default 120)
   --poll <sec>       window polling interval (default 1)
   --proc <sec>       process/CPU snapshot interval (default 10, 0 = off)
   --minutes <n>      stop by itself after n minutes, e.g. 25 (default: until Ctrl+C)
+  --break-every <n>  with --focus: take a break after every n minutes of focus
+  --break <n>        length of each break in minutes (blocked apps are allowed then)
   --focus            enable Focus Mode (block 'distracting' apps)
   --block <exe>      extra process to block (repeatable)
   --terminate        kill blocked apps instead of minimising
@@ -194,7 +195,7 @@ pip install -r requirements.txt
 python server.py        # http://127.0.0.1:8000
 ```
 
-**Focus mode tab:** press **Add apps** to choose from the apps installed on this PC (Start menu apps and Microsoft Store apps, found by `dashboard/list_installed_apps.ps1`; Windows' own tools are left out), remove one with ×, then pick 15, 25, 50 or 90 minutes and press **Start focus**. Only installed apps can be added. The dashboard starts the tracker in the background with `--focus --minutes N` and shows a countdown with live stats (time productive and distracted, apps pushed away, the app in front, a timeline); **End now** stops it cleanly. Afterwards a summary shows the focus score, whether you completed or ended early, the apps you used and every blocked attempt, and **Focus history** lists earlier sessions. Write requests only accept JSON from the dashboard's own page, so other websites cannot start sessions or change your block list.
+**Focus mode tab:** press **Add apps** to choose from the apps installed on this PC (Start menu apps and Microsoft Store apps, found by `dashboard/list_installed_apps.ps1`; Windows' own tools are left out), remove one with ×, then turn the timer wheels (or tap a quick pick) and choose breaks (none, 5 min every 25, 10 every 50 or 15 every 90) and press **Start focus**. A break is skipped when no focus time would follow it; the preview bar shows the plan before you start. Only installed apps can be added. The dashboard starts the tracker in the background with `--focus --minutes N` and shows a countdown ring (break slices in amber) with live stats (time productive and distracted, apps pushed away, the app in front, a timeline); **End now** stops it cleanly. Afterwards a summary shows the focus score, whether you completed or ended early, the apps you used and every blocked attempt, with a link to all focus sessions. **Sessions tab:** every session, with a Focus column (planned length and result) and blocked count, an **All / Focus sessions only** filter, and a detail panel with the timeline, the apps you used and the blocked attempts. **Today tab:** each chart starts with a one-sentence answer (best day, best time of day, whether your focus score is improving) and ends with how to read it. Write requests only accept JSON from the dashboard's own page, so other websites cannot start sessions or change your block list.
 
 </details>
 
@@ -205,7 +206,7 @@ The classifier labels browser tabs from their window title (a YouTube lecture is
 
 ```powershell
 pip install -r ai\requirements.txt
-python ai\demo_data.py all                         # optional: demo training titles + a "Demo student" (user 99) with 2 weeks of activity
+python ai\demo_data.py titles                      # optional: demo training titles (source = 'demo')
 python ai\title_classifier.py train                # compares 6 models, validates honestly, writes ai\model_report.md
 python ai\title_classifier.py classify             # labels new browser rows when confident enough
 python ai\title_classifier.py classify --recheck   # re-label everything after retraining
