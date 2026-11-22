@@ -13,7 +13,7 @@ MAX_PENALTY = 0.3
 SESSION_METRIC_COLUMNS = [
     "session_id", "start_time", "end_time", "focus_mode", "duration_min",
     "productive_min", "neutral_min", "distracting_min", "idle_min",
-    "switches", "focus_score",
+    "switches", "focus_score", "planned_minutes", "blocks", "outcome",
 ]
 
 
@@ -39,6 +39,17 @@ def focus_score(productive_s: float, session_s: float, idle_s: float, switches: 
     return round(max(0.0, min(100.0, score)), 1)
 
 
+def focus_outcome(focus_mode: bool, open_: bool, planned: int | None, duration_s: float) -> str | None:
+    """How a focus session went: running / completed / ended early / finished (None if not focus)."""
+    if not focus_mode:
+        return None
+    if open_:
+        return "running"
+    if planned and duration_s >= planned * 60 - 10:
+        return "completed"
+    return "ended early" if planned else "finished"
+
+
 def session_metrics(sessions: pd.DataFrame, activity: pd.DataFrame,
                     idle: pd.DataFrame) -> pd.DataFrame:
     rows = []
@@ -58,7 +69,12 @@ def session_metrics(sessions: pd.DataFrame, activity: pd.DataFrame,
         productive_s = float(by_cat.get("productive", 0.0))
         switches = count_switches(act)
 
+        planned = getattr(s, "planned_minutes", None)
+        planned = None if planned is None or pd.isna(planned) else int(planned)
         rows.append({
+            "planned_minutes": planned,
+            "blocks": int(getattr(s, "blocks", 0) or 0),
+            "outcome": focus_outcome(bool(s.focus_mode), pd.isna(s.end_time), planned, session_s),
             "session_id": int(s.session_id),
             "start_time": s.start_time,
             "end_time": end,

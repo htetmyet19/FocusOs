@@ -49,6 +49,7 @@ public:
     void reconnect();
     // Planned length of a timed session; call before the writer thread starts.
     void setPlannedMinutes(std::int64_t sessionId, int minutes);
+    void setBreakPlan(std::int64_t sessionId, int everyMinutes, int breakMinutes);
 
     void         ensureUser(std::int64_t userId, const std::string& name) override;
     std::int64_t openSession(std::int64_t userId, TimePoint start, bool focusMode) override;

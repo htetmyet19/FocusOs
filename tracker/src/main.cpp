@@ -9,6 +9,7 @@
 #include "async_writer.h"
 #include "config.h"
 #include "db_client.h"
+#include "break_schedule.h"
 #include "focus_mode.h"
 #include "idle_detector.h"
 #include "log.h"
@@ -127,14 +128,17 @@ int requestStop() {
 #endif
 }
 
+// One PC, one user: the tracker always records as user 1.
+constexpr std::int64_t kUserId = 1;
+
 struct Options {
     std::string           configPath = "config.ini";
-    std::int64_t          userId     = 1;
-    std::string           userName   = "default";
     double                idleSec    = 120.0;
     double                pollSec    = 1.0;
     double                procSec    = 10.0;   // 0 = no process sampling
     double                minutes    = 0.0;    // 0 = run until Ctrl+C
+    double                breakEvery = 0.0;    // minutes of focus before each break (0 = no breaks)
+    double                breakLen   = 0.0;    // minutes per break
     bool                  focusMode  = false;
     ft::FocusMode::Policy policy     = ft::FocusMode::Policy::Minimise;
     bool                  notify     = true;
@@ -156,12 +160,12 @@ void usage() {
     std::cout <<
         "focus_tracker [options]\n"
         "  --config <path>    INI file with a [database] section (default config.ini)\n"
-        "  --user <id>        user id (default 1)\n"
-        "  --name <name>      user display name\n"
         "  --idle <sec>       idle threshold in seconds (default 120)\n"
         "  --poll <sec>       window polling interval (default 1)\n"
         "  --proc <sec>       process/CPU snapshot interval (default 10, 0 = off)\n"
         "  --minutes <n>      stop by itself after n minutes, e.g. 25 (default: until Ctrl+C)\n"
+        "  --break-every <n>  with --focus: take a break after every n minutes of focus\n"
+        "  --break <n>        length of each break in minutes (blocked apps are allowed then)\n"
         "  --focus            enable Focus Mode (block 'distracting' apps)\n"
         "  --block <exe>      extra process to block (repeatable)\n"
         "  --close            close blocked apps (asks first, force-closes if they stay open)\n"
@@ -180,12 +184,12 @@ Options parse(int argc, char** argv) {
             return argv[++i];
         };
         if      (a == "--config")    o.configPath = next();
-        else if (a == "--user")      o.userId     = std::stoll(next());
-        else if (a == "--name")      o.userName   = next();
         else if (a == "--idle")      o.idleSec    = std::stod(next());
         else if (a == "--poll")      o.pollSec    = std::stod(next());
         else if (a == "--proc")      o.procSec    = std::stod(next());
         else if (a == "--minutes")   o.minutes    = std::stod(next());
+        else if (a == "--break-every") o.breakEvery = std::stod(next());
+        else if (a == "--break")     o.breakLen   = std::stod(next());
         else if (a == "--focus")     o.focusMode  = true;
         else if (a == "--close")     o.policy     = ft::FocusMode::Policy::Close;
         else if (a == "--terminate") o.policy     = ft::FocusMode::Policy::Terminate;
@@ -218,6 +222,10 @@ void processSamplerLoop(ft::IDbClient& sink, std::int64_t sessionId, double proc
 
 int main(int argc, char** argv) {
     Options opt = parse(argc, argv);
+    if ((opt.breakEvery > 0.0) != (opt.breakLen > 0.0) || opt.breakEvery < 0.0 || opt.breakLen < 0.0) {
+        std::cerr << "--break-every and --break go together and must be > 0\n";
+        return 1;
+    }
     if (opt.pollSec <= 0.0 || opt.idleSec <= 0.0 || opt.procSec < 0.0 || opt.minutes < 0.0) {
         std::cerr << "--poll and --idle must be > 0, --proc and --minutes must be >= 0\n";
         return 1;
@@ -251,11 +259,11 @@ int main(int argc, char** argv) {
 
         ft::PgDbClient    pg(dbCfg);
         ft::AsyncDbWriter writer(pg, /*queueCapacity=*/64);   // owns thread 3, the consumer
-        writer.ensureUser(opt.userId, opt.userName);
+        writer.ensureUser(kUserId, "default");
 
         std::set<std::string> blocked = opt.extraBlock;
         if (opt.focusMode) {
-            auto fromDb = writer.distractingApps(opt.userId);
+            auto fromDb = writer.distractingApps(kUserId);
             blocked.insert(fromDb.begin(), fromDb.end());
         }
         ft::FocusMode focus(blocked, opt.policy);
@@ -269,10 +277,13 @@ int main(int argc, char** argv) {
         cfg.idleThresholdSec = opt.idleSec;
         // The dashboard shows a focus session live, so save more often then.
         if (opt.focusMode) cfg.flushIntervalSec = 5.0;
-        ft::SessionManager sm(writer, opt.userId, opt.focusMode, cfg);
+        ft::SessionManager sm(writer, kUserId, opt.focusMode, cfg);
         sm.start(ft::Clock::now());            // synchronous: we need the session id
         if (opt.minutes > 0.0)                 // still single-threaded here, so safe on pg directly
             pg.setPlannedMinutes(sm.sessionId(), std::max(1, static_cast<int>(std::lround(opt.minutes))));
+        if (opt.focusMode && opt.breakEvery > 0.0)
+            pg.setBreakPlan(sm.sessionId(), std::max(1, static_cast<int>(std::lround(opt.breakEvery))),
+                            std::max(1, static_cast<int>(std::lround(opt.breakLen))));
         writer.start();
 
         std::thread procThread;
@@ -299,12 +310,32 @@ int main(int argc, char** argv) {
             std::chrono::duration_cast<std::chrono::steady_clock::duration>(
                 std::chrono::duration<double>(opt.minutes * 60.0));
 
+        // Breaks: blocking pauses, and a notification marks the start and the end.
+        const ft::BreakSchedule breaks{opt.breakEvery * 60.0, opt.breakLen * 60.0, opt.minutes * 60.0};
+        const auto sessionStart = std::chrono::steady_clock::now();
+        bool wasOnBreak = false;
+
         while (g_running) {
             auto now   = ft::Clock::now();
             auto win   = monitor.poll();
             auto idleS = idle.idleSeconds();
 
-            const auto action = opt.focusMode ? focus.enforce(win, now) : ft::FocusMode::Action::None;
+            const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - sessionStart).count();
+            const bool onBreak = opt.focusMode && breaks.onBreak(elapsed);
+            if (onBreak != wasOnBreak) {
+                wasOnBreak = onBreak;
+                if (onBreak) {
+                    const long long mins = std::max(1L, std::lround(breaks.breakLeft(elapsed) / 60.0));
+                    ft::logInfo("[focus] break started (", mins, " min)");
+                    if (opt.notify) notifier.notify("Break time: " + std::to_string(mins) + " min",
+                                                    "Blocked apps are allowed until the break ends.");
+                } else {
+                    ft::logInfo("[focus] break over");
+                    if (opt.notify) notifier.notify("Break over", "Back to focus. Blocked apps are blocked again.");
+                }
+            }
+
+            const auto action = (opt.focusMode && !onBreak) ? focus.enforce(win, now) : ft::FocusMode::Action::None;
             if (action == ft::FocusMode::Action::Minimised || action == ft::FocusMode::Action::Closed ||
                 action == ft::FocusMode::Action::ForceClosed) {
                 const char* what = ft::FocusMode::actionName(action);

@@ -91,10 +91,13 @@ def users() -> pd.DataFrame:
 
 def sessions(user_id: int) -> pd.DataFrame:
     df = _query(
-        "SELECT session_id, user_id, start_time, end_time, focus_mode "
-        "FROM sessions WHERE user_id = %s ORDER BY start_time",
+        """
+        SELECT s.session_id, s.user_id, s.start_time, s.end_time, s.focus_mode, s.planned_minutes,
+               (SELECT count(*) FROM focus_blocks b WHERE b.session_id = s.session_id) AS blocks
+        FROM sessions s WHERE s.user_id = %s ORDER BY s.start_time
+        """,
         (user_id,),
-        ["session_id", "user_id", "start_time", "end_time", "focus_mode"],
+        ["session_id", "user_id", "start_time", "end_time", "focus_mode", "planned_minutes", "blocks"],
     )
     df = _naive_utc(df, "start_time", "end_time")
     df["focus_mode"] = df["focus_mode"].fillna(False).astype(bool)
@@ -250,6 +253,22 @@ def focus_sessions(user_id: int, limit: int = 10) -> pd.DataFrame:
     return _naive_utc(df, "start_time", "end_time")
 
 
+def session_row(user_id: int, session_id: int) -> pd.DataFrame:
+    """One session (focus or not) with the same columns as focus_sessions()."""
+    df = _query(
+        """
+        SELECT s.session_id, s.start_time, s.end_time, s.planned_minutes,
+               (SELECT count(*) FROM focus_blocks b WHERE b.session_id = s.session_id) AS blocks,
+               s.focus_mode
+        FROM sessions s
+        WHERE s.user_id = %s AND s.session_id = %s
+        """,
+        (user_id, session_id),
+        ["session_id", "start_time", "end_time", "planned_minutes", "blocks", "focus_mode"],
+    )
+    return _naive_utc(df, "start_time", "end_time")
+
+
 def focus_blocks(session_id: int) -> pd.DataFrame:
     df = _query(
         """
@@ -279,13 +298,19 @@ def live_status(session_id: int):
     df = _query(
         """
         SELECT a.process_name, l.window_title, l.current_since, l.updated_at, l.is_idle,
-               COALESCE(o.label, d.label, 'neutral') AS category
+               COALESCE(a.is_browser, FALSE) AS is_browser,
+               sr.label AS site_category,
+               COALESCE(sr.label, o.label, d.label, 'neutral') AS category,
+               CASE WHEN sr.label IS NOT NULL THEN 'site'
+                    WHEN o.label IS NOT NULL THEN 'user' ELSE 'default' END AS category_source
         FROM session_live l
         JOIN sessions s ON s.session_id = l.session_id
         LEFT JOIN applications a ON a.app_id = l.app_id
         LEFT JOIN categories d ON d.category_id = a.default_category
         LEFT JOIN user_app_category u ON u.app_id = l.app_id AND u.user_id = s.user_id
         LEFT JOIN categories o ON o.category_id = u.category_id
+        LEFT JOIN categories sr ON a.is_browser
+             AND sr.category_id = site_rule_category(s.user_id, l.window_title)
         WHERE l.session_id = %s
         """,
         (session_id,),
@@ -303,6 +328,81 @@ def session_idle(session_id: int) -> pd.DataFrame:
         (session_id,), ["idle_id", "session_id", "start_time", "end_time"],
     )
     return _naive_utc(df, "start_time", "end_time")
+
+
+def site_rules(user_id: int) -> pd.DataFrame:
+    """Built-in rules plus this user's own; own rules first."""
+    return _query(
+        """
+        SELECT r.rule_id, r.pattern, c.label AS category, (r.user_id IS NULL) AS builtin
+        FROM site_rules r JOIN categories c USING (category_id)
+        WHERE r.user_id IS NULL OR r.user_id = %s
+        ORDER BY (r.user_id IS NULL), c.label, r.pattern
+        """,
+        (user_id,), ["rule_id", "pattern", "category", "builtin"],
+    )
+
+
+def add_site_rule(user_id: int, pattern: str, label: str) -> dict:
+    p = " ".join((pattern or "").lower().split())
+    if not 2 <= len(p) <= 60:
+        raise ValueError("A website rule needs 2 to 60 characters, for example youtube shorts or instagram")
+    if label not in VALID_LABELS:
+        raise ValueError(f"category must be one of {VALID_LABELS}")
+    with _connect() as conn:
+        # Same pattern again replaces this user's earlier rule.
+        conn.execute("DELETE FROM site_rules WHERE user_id = %s AND pattern = %s", (user_id, p))
+        rule_id = conn.execute(
+            "INSERT INTO site_rules (user_id, pattern, category_id) "
+            "VALUES (%s, %s, (SELECT category_id FROM categories WHERE label = %s)) RETURNING rule_id",
+            (user_id, p, label)).fetchone()[0]
+    return {"rule_id": rule_id, "pattern": p, "category": label}
+
+
+def delete_site_rule(user_id: int, rule_id: int) -> None:
+    with _connect() as conn:
+        n = conn.execute("DELETE FROM site_rules WHERE rule_id = %s AND user_id = %s",
+                         (rule_id, user_id)).rowcount
+    if n == 0:
+        raise ValueError("Only your own rules can be removed (built-in rules can be overridden instead).")
+
+
+def unlabelled_browser_titles(user_id: int, limit: int = 300):
+    """Distinct browser tab titles of this user that nobody has labelled yet, with time spent."""
+    df = _query(
+        """
+        SELECT v.window_title, SUM(v.seconds) AS seconds
+        FROM vw_activity v
+        JOIN applications a ON a.app_id = v.app_id
+        WHERE v.user_id = %s AND a.is_browser AND v.window_title <> ''
+          AND NOT EXISTS (SELECT 1 FROM title_training_samples t WHERE t.window_title = v.window_title)
+        GROUP BY v.window_title
+        ORDER BY seconds DESC
+        LIMIT %s
+        """,
+        (user_id, limit), ["window_title", "seconds"],
+    )
+    return [(r.window_title, float(r.seconds)) for r in df.itertuples()]
+
+
+def add_training_sample(title: str, label: str) -> None:
+    if label not in VALID_LABELS:
+        raise ValueError(f"label must be one of {VALID_LABELS}")
+    title = (title or "").strip()
+    if not title:
+        raise ValueError("The title is empty.")
+    with _connect() as conn:
+        # Your newest label for a title replaces an older one.
+        conn.execute("DELETE FROM title_training_samples WHERE window_title = %s AND source = 'user'", (title,))
+        conn.execute("INSERT INTO title_training_samples (window_title, label, source) VALUES (%s, %s, 'user')",
+                     (title, label))
+
+
+def training_counts() -> dict:
+    df = _query("SELECT source, label, count(*) AS n FROM title_training_samples GROUP BY source, label",
+                columns=["source", "label", "n"])
+    return {"user": int(df[df.source == "user"].n.sum()) if not df.empty else 0,
+            "demo": int(df[df.source == "demo"].n.sum()) if not df.empty else 0}
 
 
 def process_usage(user_id: int, since=None) -> dict:

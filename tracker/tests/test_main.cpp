@@ -3,6 +3,7 @@
 // real threads). No framework needed:  build/focus_tests.exe  or  ctest.
 
 #include "bounded_queue.h"
+#include "break_schedule.h"
 #include "session_manager.h"
 
 #include <atomic>
@@ -249,6 +250,32 @@ void test_queue_close_wakes_consumer() {
 
 } // namespace
 
+void test_break_schedule() {
+    std::cout << "break schedule\n";
+    // 90 min, a 10 min break every 50 min: focus 0-50, break 50-60, focus 60-90.
+    BreakSchedule b{50 * 60.0, 10 * 60.0, 90 * 60.0};
+    CHECK(b.enabled());
+    CHECK(!b.onBreak(0));
+    CHECK(!b.onBreak(49 * 60.0));
+    CHECK(b.onBreak(50 * 60.0));
+    CHECK(b.onBreak(59 * 60.0));
+    CHECK(std::fabs(b.breakLeft(55 * 60.0) - 5 * 60.0) < 1e-6);
+    CHECK(!b.onBreak(60 * 60.0));
+    CHECK(!b.onBreak(89 * 60.0));
+    CHECK(b.breakLeft(70 * 60.0) == 0.0);
+
+    // 120 min, 5 min every 25: breaks at 25, 55, 85; the one at 115 would run
+    // into the end of the session, so it is skipped.
+    BreakSchedule p{25 * 60.0, 5 * 60.0, 120 * 60.0};
+    CHECK(p.onBreak(27 * 60.0));
+    CHECK(p.onBreak(87 * 60.0));
+    CHECK(!p.onBreak(116 * 60.0));
+
+    BreakSchedule off{};
+    CHECK(!off.enabled());
+    CHECK(!off.onBreak(30 * 60.0));
+}
+
 int main() {
     test_blip_is_absorbed();
     test_real_switch_is_backdated();
@@ -260,6 +287,7 @@ int main() {
     test_live_status();
     test_queue_many_producers();
     test_queue_close_wakes_consumer();
+    test_break_schedule();
 
     std::cout << "\n" << (g_checks - g_failures) << "/" << g_checks << " checks passed\n";
     return g_failures == 0 ? 0 : 1;

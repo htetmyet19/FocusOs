@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS applications (
 );
 
 CREATE TABLE IF NOT EXISTS users (
-    user_id  BIGINT PRIMARY KEY,        -- chosen with --user, not generated
+    user_id  BIGINT PRIMARY KEY,        -- FocusOs is single-user: always 1 (kept so the schema stays normalised)
     name     TEXT   NOT NULL
 );
 
@@ -100,6 +100,9 @@ CREATE INDEX IF NOT EXISTS idx_process_app ON process_samples (app_id);
 
 -- Planned length of a timed session (--minutes), to show "ended early" vs "completed".
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS planned_minutes INTEGER NULL CHECK (planned_minutes > 0);
+-- Breaks inside a focus session: a break_min-minute break after every break_every_min minutes of focus.
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS break_every_min INTEGER NULL CHECK (break_every_min > 0);
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS break_min       INTEGER NULL CHECK (break_min > 0);
 
 -- What a running session is doing right now: one row per running session,
 -- upserted by the tracker every few seconds and deleted when it stops. Lets
@@ -129,6 +132,27 @@ CREATE INDEX IF NOT EXISTS idx_focus_blocks_session ON focus_blocks (session_id,
 ALTER TABLE focus_blocks DROP CONSTRAINT IF EXISTS focus_blocks_action_check;
 ALTER TABLE focus_blocks ADD CONSTRAINT focus_blocks_action_check
     CHECK (action IN ('minimised', 'closed', 'terminated'));
+
+-- ---------------------------------------------------------------- websites
+
+-- Browsers show many websites; their tabs are categorised per site.
+ALTER TABLE applications ADD COLUMN IF NOT EXISTS is_browser BOOLEAN NOT NULL DEFAULT FALSE;
+UPDATE applications SET is_browser = TRUE
+WHERE process_name IN ('chrome.exe', 'msedge.exe', 'firefox.exe', 'brave.exe', 'opera.exe', 'vivaldi.exe')
+  AND NOT is_browser;
+
+-- "If a browser tab's title contains <pattern>, it is <category>."
+-- user_id NULL = built-in rule for everyone; a user's own rule wins over a
+-- built-in one, and a longer pattern wins over a shorter one.
+CREATE TABLE IF NOT EXISTS site_rules (
+    rule_id      BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    user_id      BIGINT   NULL REFERENCES users (user_id) ON DELETE CASCADE,
+    pattern      TEXT     NOT NULL CHECK (pattern = LOWER(pattern) AND length(pattern) BETWEEN 2 AND 60),
+    category_id  SMALLINT NOT NULL REFERENCES categories (category_id),
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_site_rules_user_pattern
+    ON site_rules (COALESCE(user_id, 0), pattern);
 
 -- ---------------------------------------------------------------- AI
 
@@ -176,3 +200,21 @@ INSERT INTO applications (process_name, default_category) VALUES
     ('whatsapp.exe', 3), ('whatsapp.root.exe', 3),   -- Store build uses .root.exe
     ('telegram.exe', 3)
 ON CONFLICT (process_name) DO NOTHING;
+UPDATE applications SET is_browser = TRUE
+WHERE process_name IN ('chrome.exe', 'msedge.exe', 'firefox.exe', 'brave.exe', 'opera.exe', 'vivaldi.exe')
+  AND NOT is_browser;
+
+-- Built-in website rules (matched against the tab title, lower-cased).
+-- Sites that can be anything (YouTube, Reddit, Wikipedia) are deliberately
+-- left to the AI, which reads the rest of the title.
+INSERT INTO site_rules (user_id, pattern, category_id)
+SELECT NULL, p, c FROM (VALUES
+    ('instagram', 3), ('reels', 3), ('#shorts', 3), ('youtube shorts', 3), ('netflix', 3),
+    ('prime video', 3), ('hotstar', 3), ('twitch', 3), ('facebook', 3), ('tiktok', 3),
+    ('9gag', 3), ('cricbuzz', 3), ('/ x', 3), ('myntra', 3), ('flipkart', 3), ('spotify', 3),
+    ('stack overflow', 1), ('github', 1), ('leetcode', 1), ('geeksforgeeks', 1), ('coursera', 1),
+    ('overleaf', 1), ('google docs', 1), ('google scholar', 1), ('w3schools', 1), ('cppreference', 1),
+    ('mdn', 1), ('kaggle', 1), ('chatgpt', 1), ('nptel', 1), ('khan academy', 1), ('documentation', 1),
+    ('gmail', 2), ('outlook', 2), ('google maps', 2), ('netbanking', 2), ('google calendar', 2)
+) AS v(p, c)
+ON CONFLICT DO NOTHING;

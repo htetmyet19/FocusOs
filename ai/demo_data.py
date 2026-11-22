@@ -1,12 +1,11 @@
-"""Demo data for FocusOs.
+"""Demo training titles for the FocusOs title classifier.
 
   python ai/demo_data.py titles     labelled window titles for the classifier (source = 'demo')
-  python ai/demo_data.py activity   two weeks of sessions for a separate "Demo student" user (id 99)
-  python ai/demo_data.py all        both
-  python ai/demo_data.py reset      remove all demo data again
+  python ai/demo_data.py reset      remove the demo titles again
 
-Everything demo is kept apart from real data: titles have source = 'demo',
-activity belongs to user 99 only. Your own sessions are never touched.
+Demo titles are kept apart from your own labels (source = 'demo' vs 'user').
+FocusOs is single-user, so no fake activity is generated: it would mix with
+your real sessions. Your own sessions are never touched.
 
 Labelling policy (the same rule a human labeller would follow):
   productive   studying or working: lectures, docs, coding, papers, assignments
@@ -25,17 +24,12 @@ works, not that the model is accurate on real titles. Label real titles too.
 import argparse
 import random
 import sys
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from title_classifier import DEFAULT_CONFIG, load_database_config  # noqa: E402
 
-DEMO_USER_ID = 99
-DEMO_USER_NAME = "Demo student"
-IST = timezone(timedelta(hours=5, minutes=30))   # fixed offset: no tz database needed
 LABEL_NOISE = 0.02                               # real hand labels are never perfect
-DEMO_CPUS = 8                                    # assumed logical CPUs for demo CPU times
 
 BROWSER_SUFFIX = [" - Google Chrome", " - Google Chrome", " - Brave", " - Microsoft​ Edge",
                   " — Mozilla Firefox", ""]
@@ -102,6 +96,17 @@ F = {
     "city": ["Dehradun", "Delhi", "Mumbai", "Bengaluru", "Tokyo", "London"],
     "wiki_general": ["Dehradun", "Taj Mahal", "Virat Kohli", "Mount Everest", "Bollywood", "Tokyo"],
     "name": ["Htet", "Priya", "Rahul", "Aman", "Sneha"],
+    # added in v2 of the demo data: topics the first model had never seen
+    "video_game": ["GTA 6", "GTA 5", "Minecraft", "Valorant", "BGMI", "Free Fire", "Fortnite", "Elden Ring",
+                   "Call of Duty", "Roblox", "FIFA 26", "Clash of Clans"],
+    "streamer2": ["Shinelayz", "Techno Gamerz", "Total Gaming", "CarryMinati", "Mortal", "Dynamo Gaming"],
+    "song2": ["Kesariya", "Pasoori", "Apna Bana Le", "Espresso", "Die With A Smile", "Husn"],
+    "artist2": ["Arijit Singh", "Sabrina Carpenter", "Bruno Mars", "Anuv Jain", "Diljit Dosanjh"],
+    "sport": ["IPL 2026", "Premier League", "Champions League", "World Cup qualifiers", "Pro Kabaddi"],
+    "exam": ["GATE CSE", "semester exam", "end-term exam", "placement interview", "UGC NET"],
+    "skill": ["Python", "Data Structures", "SQL", "Operating Systems", "Machine Learning", "Java", "React"],
+    "admin_task": ["reset password", "update address", "download marksheet", "pay hostel fee",
+                   "check application status", "renew library card"],
     "n": [str(i) for i in range(1, 30)],
 }
 
@@ -168,6 +173,20 @@ TEMPLATES = [
     ("n_amazon_orders", "neutral", "Your Orders - Amazon.in"),
     ("n_paytm", "neutral", "Electricity Bill Payment - Paytm"),
     ("n_downloads", "neutral", "Downloads"),
+    # v2: broader coverage (gaming, streams, music, sport, more study videos, more admin)
+    ("d_game_stream", "distracting", "{video_game} Marathon Stream & Giveaway - YouTube"),
+    ("d_gameplay", "distracting", "{video_game} Gameplay Part {n} - {streamer2} - YouTube"),
+    ("d_game_live", "distracting", "{streamer2} is live! {video_game} rank push - YouTube"),
+    ("d_trailer", "distracting", "{video_game} Official Trailer {n} - YouTube"),
+    ("d_music_video", "distracting", "{song2} (Official Music Video) - {artist2} - YouTube"),
+    ("d_lyrics", "distracting", "{song2} Lyrics | {artist2} - YouTube"),
+    ("d_sport_highlights", "distracting", "{sport} Highlights: {team} vs {team} - YouTube"),
+    ("p_full_course", "productive", "{skill} Full Course for Beginners ({n} Hours) - YouTube"),
+    ("p_crash_course", "productive", "{skill} Crash Course - Learn in One Video - YouTube"),
+    ("p_exam_prep", "productive", "{exam} preparation: {cs} previous year questions - YouTube"),
+    ("p_solved", "productive", "{cs} solved examples | {exam} - YouTube"),
+    ("n_how_to_admin", "neutral", "How to {admin_task} - Google Search"),
+    ("n_portal_admin", "neutral", "{admin_task} - University ERP"),
 ]
 
 
@@ -202,165 +221,39 @@ def generate_titles(per_template: int = 12, seed: int = 7, noise: float = LABEL_
     return rows
 
 
-# ----------------------------------------------------------------- demo activity
-
-DESKTOP_APPS = {
-    "code.exe": ["main.cpp - FocusOs - Visual Studio Code", "session_manager.cpp - FocusOs - Visual Studio Code",
-                 "schema.sql - FocusOs - Visual Studio Code", "app.js - dashboard - Visual Studio Code"],
-    "winword.exe": ["DBMS Lab Report.docx - Word", "OS Assignment 3.docx - Word"],
-    "windowsterminal.exe": ["Windows PowerShell", "cmake --build build"],
-    "explorer.exe": ["Downloads", "Documents"],
-    "discord.exe": ["#general | Study Group - Discord", "Friends - Discord"],
-    "whatsapp.root.exe": ["WhatsApp"],
-    "spotify.exe": ["Spotify Premium"],
-}
-BUSY_PROCESSES = [("chrome.exe", 4.0), ("code.exe", 2.5), ("msedge.exe", 1.0), ("onedrive.exe", 0.6),
-                  ("discord.exe", 1.2), ("spotify.exe", 0.8), ("searchhost.exe", 0.4), ("nvidia app.exe", 0.5)]
-
-
-def _segments_for_session(rng, start, minutes, focus, chrome_titles):
-    """A plausible run of windows: mostly study, some drift, a coffee-break idle."""
-    segs, t, end = [], start, start + timedelta(minutes=minutes)
-    focus_bias = 0.85 if focus else 0.6        # focus sessions drift less
-    while t < end:
-        dur = timedelta(seconds=rng.randint(40, 600))
-        r = rng.random()
-        if r < 0.06 and segs:
-            segs.append(("idle", None, None, t, min(t + timedelta(seconds=rng.randint(130, 420)), end)))
-        elif r < focus_bias:
-            app = rng.choice(["code.exe", "code.exe", "winword.exe", "windowsterminal.exe", "chrome.exe", "chrome.exe"])
-            title = rng.choice(chrome_titles["productive"]) if app == "chrome.exe" else rng.choice(DESKTOP_APPS[app])
-            segs.append(("act", app, title, t, min(t + dur, end)))
-        elif r < focus_bias + 0.12:
-            app = rng.choice(["chrome.exe", "explorer.exe"])
-            title = rng.choice(chrome_titles["neutral"]) if app == "chrome.exe" else rng.choice(DESKTOP_APPS[app])
-            segs.append(("act", app, title, t, min(t + dur / 2, end)))
-        else:
-            app = rng.choice(["chrome.exe", "chrome.exe", "discord.exe", "whatsapp.root.exe", "spotify.exe"])
-            title = rng.choice(chrome_titles["distracting"]) if app == "chrome.exe" else rng.choice(DESKTOP_APPS[app])
-            segs.append(("act", app, title, t, min(t + dur / 2, end)))
-        t = segs[-1][4]
-    return segs
-
-
-def generate_activity(conn, days: int = 14, seed: int = 21) -> dict:
-    rng = random.Random(seed)
-    # Titles for the demo browser tabs come from a different seed than the
-    # training titles, so the classifier sees new instances.
-    pool = {"productive": [], "neutral": [], "distracting": []}
-    for title, label, _ in generate_titles(per_template=6, seed=seed + 1000, noise=0.0):
-        pool[label].append(title)
-
-    cur = conn.cursor()
-    cur.execute("INSERT INTO users (user_id, name) VALUES (%s, %s) ON CONFLICT (user_id) DO UPDATE SET name = EXCLUDED.name",
-                (DEMO_USER_ID, DEMO_USER_NAME))
-    app_ids = {}
-
-    def app_id(name):
-        if name not in app_ids:
-            app_ids[name] = cur.execute(
-                "INSERT INTO applications (process_name) VALUES (%s) ON CONFLICT (process_name) "
-                "DO UPDATE SET process_name = EXCLUDED.process_name RETURNING app_id", (name,)).fetchone()[0]
-        return app_ids[name]
-
-    now_ist = datetime.now(IST)
-    counts = {"sessions": 0, "activity": 0, "idle": 0, "process": 0, "blocks": 0}
-    for back in range(days, -1, -1):
-        day = (now_ist - timedelta(days=back)).date()
-        if back == 10:
-            continue                                   # one missed day: streak restarts after it
-        n_sessions = rng.choice([1, 2, 2, 3])
-        hours = sorted(rng.sample([9, 10, 11, 14, 15, 16, 19, 20, 21, 22], n_sessions))
-        for h in hours:
-            start = datetime(day.year, day.month, day.day, h, rng.randint(0, 40), tzinfo=IST)
-            focus = rng.random() < 0.5
-            planned = rng.choice([25, 50]) if focus else None
-            minutes = (planned if rng.random() < 0.7 else rng.randint(8, planned - 3)) if focus else rng.randint(30, 110)
-            end = start + timedelta(minutes=minutes)
-            if end > now_ist - timedelta(minutes=2):
-                continue                               # don't invent the future
-            sid = cur.execute(
-                "INSERT INTO sessions (user_id, start_time, end_time, focus_mode, planned_minutes) "
-                "VALUES (%s, %s, %s, %s, %s) RETURNING session_id",
-                (DEMO_USER_ID, start, end, focus, planned)).fetchone()[0]
-            counts["sessions"] += 1
-
-            for kind, app, title, s, e in _segments_for_session(rng, start, minutes, focus, pool):
-                if kind == "idle":
-                    cur.execute("INSERT INTO idle_periods (session_id, start_time, end_time) VALUES (%s, %s, %s)", (sid, s, e))
-                    counts["idle"] += 1
-                    continue
-                cur.execute("INSERT INTO activity_log (session_id, app_id, window_title, start_time, end_time) "
-                            "VALUES (%s, %s, %s, %s, %s)", (sid, app_id(app), title, s, e))
-                counts["activity"] += 1
-                # Focus Mode would have pushed distracting desktop apps away.
-                if focus and app in ("discord.exe", "whatsapp.root.exe", "spotify.exe"):
-                    cur.execute("INSERT INTO focus_blocks (session_id, blocked_at, app_id, action) VALUES (%s, %s, %s, 'minimised')",
-                                (sid, s, app_id(app)))
-                    counts["blocks"] += 1
-
-            # Blocked apps also try to pop up on their own (notifications, habit):
-            # 0-4 attempts per focus session that Focus Mode pushed away.
-            if focus:
-                for _ in range(rng.choice([0, 1, 1, 2, 3, 4])):
-                    at = start + timedelta(seconds=rng.randint(60, max(61, minutes * 60 - 60)))
-                    cur.execute("INSERT INTO focus_blocks (session_id, blocked_at, app_id, action) VALUES (%s, %s, %s, 'minimised')",
-                                (sid, at, app_id(rng.choice(["discord.exe", "whatsapp.root.exe", "spotify.exe", "telegram.exe"]))))
-                    counts["blocks"] += 1
-
-            # Process snapshots every ~5 minutes: a few busy processes.
-            t = start + timedelta(minutes=1)
-            while t < end:
-                for name, base in rng.sample(BUSY_PROCESSES, 4):
-                    cpu = max(0.5, rng.gauss(base, base / 3))
-                    cur.execute(
-                        "INSERT INTO process_samples (session_id, sampled_at, app_id, pid, parent_pid, thread_count, "
-                        "base_priority, priority_class, cpu_percent, cpu_delta_ms, cpu_total_ms, working_set_bytes, is_foreground) "
-                        "VALUES (%s,%s,%s,%s,%s,%s,8,'normal',%s,%s,%s,%s,%s)",
-                        (sid, t, app_id(name), rng.randint(1000, 30000), rng.randint(500, 9000), rng.randint(8, 60),
-                         # cpu_percent is a share of ALL cores: ms = % x interval x cores
-                         round(cpu, 2), int(cpu / 100 * 300_000 * DEMO_CPUS), rng.randint(10_000, 900_000),
-                         rng.randint(80, 900) * 1024 * 1024, name == "code.exe"))
-                    counts["process"] += 1
-                t += timedelta(minutes=5)
-    return counts
-
-
 def reset(conn) -> None:
     cur = conn.cursor()
-    cur.execute("DELETE FROM sessions WHERE user_id = %s", (DEMO_USER_ID,))     # cascades to activity etc.
-    cur.execute("DELETE FROM user_app_category WHERE user_id = %s", (DEMO_USER_ID,))
-    cur.execute("DELETE FROM users WHERE user_id = %s", (DEMO_USER_ID,))
     cur.execute("DELETE FROM title_training_samples WHERE source = 'demo'")
+    # Older versions also created a separate demo user (id 99) with fake
+    # activity; FocusOs is single-user now, so remove it if it is still there.
+    cur.execute("DELETE FROM sessions WHERE user_id = 99")      # cascades to activity etc.
+    cur.execute("DELETE FROM user_app_category WHERE user_id = 99")
+    cur.execute("DELETE FROM site_rules WHERE user_id = 99")
+    cur.execute("DELETE FROM users WHERE user_id = 99")
 
 
 def main() -> None:
     import psycopg
-    parser = argparse.ArgumentParser(description="Create or remove FocusOs demo data.")
-    parser.add_argument("what", choices=("titles", "activity", "all", "reset"))
+    parser = argparse.ArgumentParser(description="Create or remove FocusOs demo training titles.")
+    parser.add_argument("what", choices=("titles", "reset"))
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     args = parser.parse_args()
 
     with psycopg.connect(**load_database_config(args.config)) as conn:
-        if args.what in ("reset", "titles", "all"):
-            # Re-running replaces the old demo data instead of piling it up.
-            if args.what == "reset":
-                reset(conn)
-                print("Removed all demo data (user 99 and demo training titles).")
-                return
-            conn.execute("DELETE FROM title_training_samples WHERE source = 'demo'")
-            rows = generate_titles()
-            conn.cursor().executemany(
-                "INSERT INTO title_training_samples (window_title, label, source, template_group) "
-                "VALUES (%s, %s, 'demo', %s)", rows)
-            by = {}
-            for _, label, _ in rows:
-                by[label] = by.get(label, 0) + 1
-            print(f"Added {len(rows)} demo training titles from {len(TEMPLATES)} templates: {by}")
-        if args.what in ("activity", "all"):
-            conn.execute("DELETE FROM sessions WHERE user_id = %s", (DEMO_USER_ID,))
-            counts = generate_activity(conn)
-            print(f"Added demo activity for user {DEMO_USER_ID} ({DEMO_USER_NAME}): {counts}")
+        if args.what == "reset":
+            reset(conn)
+            print("Removed all demo data (demo training titles, and the old demo user if present).")
+            return
+        # Re-running replaces the old demo titles instead of piling them up.
+        conn.execute("DELETE FROM title_training_samples WHERE source = 'demo'")
+        rows = generate_titles()
+        conn.cursor().executemany(
+            "INSERT INTO title_training_samples (window_title, label, source, template_group) "
+            "VALUES (%s, %s, 'demo', %s)", rows)
+        by = {}
+        for _, label, _ in rows:
+            by[label] = by.get(label, 0) + 1
+        print(f"Added {len(rows)} demo training titles from {len(TEMPLATES)} templates: {by}")
 
 
 if __name__ == "__main__":

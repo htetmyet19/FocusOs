@@ -3,7 +3,7 @@ const COLOURS = { get productive() { return cssv("--productive"); }, get neutral
 const PRIMARY = () => cssv("--productive");
 const CATS = ["productive", "neutral", "distracting"];
 
-const state = { user: null, range: "7d", data: null, charts: {} };
+const state = { range: "7d", data: null, charts: {} };
 
 const $ = (sel) => document.querySelector(sel);
 const fmtTs = (iso) => iso ? iso.replace("T", " ").replace("Z", "") : "";
@@ -57,11 +57,7 @@ function chart(id, config) {
 /* ---------- init ---------- */
 async function init() {
   try {
-    const users = await api("/api/users");
-    const sel = $("#user");
-    sel.innerHTML = users.map(u => `<option value="${esc(u.user_id)}">${esc(u.name)} (id ${esc(u.user_id)})</option>`).join("");
-    state.user = users[0]?.user_id ?? 1;
-    sel.onchange = () => { state.user = +sel.value; state.goalOverride = undefined; load(); };
+    await api("/api/summary?range=today");   // fail early with a clear message if the database is down
   } catch (e) {
     $("#status").textContent = e.message;
     return;
@@ -76,6 +72,8 @@ async function init() {
     const b = e.target.closest("button"); if (!b) return;
     document.querySelectorAll(".tabs button, .tab").forEach(el => el.classList.remove("active"));
     b.classList.add("active"); $(`#tab-${b.dataset.tab}`).classList.add("active");
+    // Hidden scroll wheels can't be positioned: put them on the chosen length now.
+    if (b.dataset.tab === "settings" && state.applyWheelLength) state.applyWheelLength();
   };
   $("#refresh").onclick = () => {
     const btn = $("#refresh");
@@ -92,11 +90,11 @@ async function load() {
   $("#status").textContent = "Loading…";
   try {
     const [summary, cats, procs, installed] = await Promise.all([
-      api(`/api/summary?user=${state.user}&range=${state.range}`),
-      api(`/api/categories?user=${state.user}`),
-      api(`/api/processes?user=${state.user}&range=${state.range}`),
+      api(`/api/summary?range=${state.range}`),
+      api(`/api/categories`),
+      api(`/api/processes?range=${state.range}`),
       // Installed apps (cached on the server) so blocked chips show friendly names.
-      api(`/api/installed-apps?user=${state.user}`).catch(() => state.installed),
+      api(`/api/installed-apps`).catch(() => state.installed),
     ]);
     state.installed = installed;
     state.data = summary;
@@ -106,6 +104,8 @@ async function load() {
     renderProcesses(procs);
     renderSettings(cats);
     loadFocusHistory();
+    loadSiteRules();
+    loadTeach();
     $("#status").textContent = `Updated ${new Date().toLocaleTimeString()}`;
   } catch (e) {
     $("#status").textContent = e.message;
@@ -133,7 +133,7 @@ function fmtShort(sec) {
 
 /* ---------- daily goal (a per-browser preference, so localStorage is enough) ---------- */
 const GOAL_STEPS = [0.5, 1, 1.5, 2, 2.5, 3, 4, 5, 6, 8];
-const goalKey = () => `focusos.goalHours.${state.user}`;
+const goalKey = () => "focusos.goalHours.1";   // key kept from the multi-user version, so a saved goal survives
 function getGoal() {
   try { const v = parseFloat(localStorage.getItem(goalKey())); if (GOAL_STEPS.includes(v)) return v; } catch (_) { /* storage blocked */ }
   return 3;
@@ -156,9 +156,7 @@ function renderToday(d) {
   const today = d.today || { tracked_s: 0, productive_s: 0, distracting_s: 0 };
   const goalH = currentGoal(), goalS = goalH * 3600;
   const prod = today.productive_s || 0;
-  const name = $("#user").selectedOptions[0]?.textContent.replace(/\s*\(id \d+\)$/, "") || "";
-
-  $("#greeting").textContent = name && name !== "default" ? `${greetingFor(new Date())}, ${name}` : greetingFor(new Date());
+  $("#greeting").textContent = greetingFor(new Date());
 
   let title;
   if (prod <= 0) title = today.tracked_s > 0 ? "No focused work yet today. One good session changes that." : "Nothing tracked yet today. Start the tracker when you sit down.";
@@ -245,47 +243,214 @@ function renderOverview(d) {
   const byTime = [...d.sessions].sort((a, b) => a.start_time.localeCompare(b.start_time));
   $("#s-focus").innerHTML = spark(byTime.map(s => s.focus_score), COLOURS.productive);
 
-  const hrs = Array.from({ length: 24 }, () => []);
-  d.sessions.forEach(s => hrs[+s.start_time.slice(11, 13)].push(s.focus_score));
-  const hAvg = hrs.map(a => a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0);
-  chart("chart-hour", {
-    type: "bar",
-    data: { labels: hrs.map((_, h) => String(h).padStart(2, "0")), datasets: [{ label: "avg focus score", data: hAvg.map(v => +v.toFixed(0)),
-      backgroundColor: hAvg.map((v, h) => !hrs[h].length ? COLOURS.idle : v < 40 ? COLOURS.distracting : COLOURS.productive) }] },
-    options: { plugins: { legend: { display: false } }, scales: { y: { min: 0, max: 100, border: { display: false } }, x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 8 }, title: { display: true, text: "Hour the session started (UTC)" } } } },
-  });
+  renderDaily(d);
+  renderDayparts(d.sessions);
+  renderTrend(d.sessions);
+}
+
+// "2 h 10 min", "35 min", "40 s" from minutes
+function fmtHM(min) {
+  if (min < 1) return `${Math.round(min * 60)}${NBSP}s`;
+  const m = Math.round(min);
+  return m >= 60 ? `${Math.floor(m / 60)}${NBSP}h${m % 60 ? ` ${m % 60}${NBSP}min` : ""}` : `${m}${NBSP}min`;
+}
+const utcDate = (ts) => new Date(ts.replace(" ", "T").replace(/Z?$/, "Z"));   // DB times are UTC
+const dayLabel = (ymd) => new Date(`${ymd}T12:00:00Z`).toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" });
+
+/* How your days went: one stacked bar per day, with the answer written above it. */
+function renderDaily(d) {
+  const dates = [...new Set(d.daily.map(r => r.date))].sort();
+  const minsOf = (dt, c) => d.daily.find(r => r.date === dt && r.category === c)?.minutes ?? 0;
+  const totals = dates.map(dt => CATS.reduce((a, c) => a + minsOf(dt, c), 0));
+  const useHours = Math.max(0, ...totals) >= 120;           // big days read better in hours
+  const unit = useHours ? 60 : 1;
+
+  const take = $("#daily-takeaway");
+  if (!dates.length) {
+    take.textContent = "Nothing tracked in this range yet. Start the tracker and come back.";
+  } else {
+    const best = dates.reduce((bi, dt, i) => minsOf(dt, "productive") > minsOf(dates[bi], "productive") ? i : bi, 0);
+    const prod = minsOf(dates[best], "productive"), tot = totals[best];
+    const share = tot ? Math.round(100 * prod / tot) : 0;
+    take.textContent = dates.length === 1
+      ? `${dayLabel(dates[0])}: ${fmtHM(prod)} in work apps out of ${fmtHM(tot)} (${share}%).`
+      : `Your best day was ${dayLabel(dates[best])}: ${fmtHM(prod)} in work apps, ${share}% of that day.`;
+  }
 
   chart("chart-daily", {
     type: "bar",
     data: {
-      labels: dates,
+      labels: dates.map(dayLabel),
       datasets: CATS.map(c => ({
-        label: c[0].toUpperCase() + c.slice(1), backgroundColor: COLOURS[c],
-        data: dates.map(dt => d.daily.find(r => r.date === dt && r.category === c)?.minutes ?? 0),
-        maxBarThickness: 44,
+        label: { productive: "Work apps", neutral: "Neutral", distracting: "Distracting" }[c],
+        backgroundColor: COLOURS[c],
+        data: dates.map(dt => +(minsOf(dt, c) / unit).toFixed(2)),
+        maxBarThickness: 44, borderSkipped: false, borderWidth: { top: 2 }, borderColor: cssv("--surface") || "#fff",
       })),
     },
-    options: { scales: { x: { stacked: true, grid: { display: false } }, y: { stacked: true, border: { display: false }, title: { display: true, text: "Minutes" } } } },
+    options: {
+      plugins: {
+        legend: { position: "top" },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => {
+              const min = ctx.raw * unit, tot = totals[ctx.dataIndex];
+              return ` ${ctx.dataset.label}: ${fmtHM(min)} (${tot ? Math.round(100 * min / tot) : 0}%)`;
+            },
+            footer: (items) => `Total: ${fmtHM(totals[items[0].dataIndex])}`,
+          },
+        },
+      },
+      scales: {
+        x: { stacked: true, grid: { display: false } },
+        y: { stacked: true, border: { display: false }, title: { display: true, text: useHours ? "Hours" : "Minutes" },
+             ticks: { maxTicksLimit: 5 } },
+      },
+    },
   });
+}
 
-  const sess = [...d.sessions].sort((a, b) => a.start_time.localeCompare(b.start_time));
-  const jade = PRIMARY();
+/* When you focus best: four parts of the day as a ranked meter list. */
+const DAYPARTS = [
+  { key: "morning", name: "Morning", span: "5 am – 12 pm", from: 5, to: 12 },
+  { key: "afternoon", name: "Afternoon", span: "12 – 5 pm", from: 12, to: 17 },
+  { key: "evening", name: "Evening", span: "5 – 9 pm", from: 17, to: 21 },
+  { key: "night", name: "Night", span: "9 pm – 5 am", from: 21, to: 29 },
+];
+function renderDayparts(sessions) {
+  const groups = DAYPARTS.map(p => ({ ...p, scores: [] }));
+  for (const s of sessions) {
+    let h = utcDate(s.start_time).getHours();
+    if (h < 5) h += 24;
+    groups.find(g => h >= g.from && h < g.to)?.scores.push(s.focus_score);
+  }
+  groups.forEach(g => { g.avg = g.scores.length ? g.scores.reduce((a, b) => a + b, 0) / g.scores.length : null; });
+  const withData = groups.filter(g => g.avg != null);
+  const best = withData.reduce((b, g) => (b == null || g.avg > b.avg ? g : b), null);
+
+  const take = $("#daypart-takeaway");
+  if (!best) take.textContent = "No sessions in this range yet.";
+  else {
+    const n = best.scores.length;
+    take.textContent = `You focus best in the ${best.name.toLowerCase()}: an average score of ${Math.round(best.avg)} over ${n} session${n === 1 ? "" : "s"}.` +
+      (sessions.length < 5 ? " A few more sessions will make this more reliable." : "");
+  }
+
+  $("#daypart-list").innerHTML = groups.map(g => {
+    const n = g.scores.length;
+    const val = g.avg == null ? "–" : Math.round(g.avg);
+    return `<li class="${g === best ? "is-best" : ""}${g.avg == null ? " is-empty" : ""}">
+      <span class="ml-name">${esc(g.name)}<span class="ml-span">${esc(g.span)}</span></span>
+      <span class="ml-track" aria-hidden="true"><span class="ml-fill" style="width:${g.avg == null ? 0 : Math.max(2, g.avg)}%"></span></span>
+      <span class="ml-value">${val}<span class="ml-count">${n ? `${n} session${n === 1 ? "" : "s"}` : "no sessions"}</span></span>
+    </li>`;
+  }).join("");
+}
+
+/* Is your focus getting better? Score per session with "great" and "low" zones. */
+const scoreZones = {
+  id: "scoreZones",
+  beforeDatasetsDraw(c) {
+    const { ctx, chartArea: a, scales: { y } } = c;
+    if (!a) return;
+    const zone = (from, to, colour, label) => {
+      const top = y.getPixelForValue(to), bottom = y.getPixelForValue(from);
+      ctx.save();
+      ctx.globalAlpha = 0.1;
+      ctx.fillStyle = colour;
+      ctx.fillRect(a.left, top, a.right - a.left, bottom - top);
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = cssv("--muted");
+      ctx.font = '600 11px "IBM Plex Sans", system-ui, sans-serif';
+      ctx.textAlign = "left"; ctx.textBaseline = "middle";
+      ctx.fillText(label, a.right + 8, (top + bottom) / 2);       // in the right margin, clear of the dots
+      ctx.restore();
+    };
+    zone(70, 100, COLOURS.productive, "Great");
+    zone(0, 40, COLOURS.distracting, "Low");
+  },
+};
+function renderTrend(sessions) {
+  const sess = [...sessions].sort((a, b) => a.start_time.localeCompare(b.start_time));
+  const scores = sess.map(s => s.focus_score);
+  const avg = (xs) => xs.reduce((a, b) => a + b, 0) / xs.length;
+
+  const take = $("#trend-takeaway");
+  if (scores.length < 2) take.textContent = "Finish a couple of sessions to see how your focus changes.";
+  else if (scores.length < 6) take.textContent = `Your average score so far is ${Math.round(avg(scores))} out of 100.`;
+  else {
+    const recent = avg(scores.slice(-5)), before = avg(scores.slice(-10, -5));
+    const diff = Math.round(recent - before);
+    take.textContent = diff >= 5 ? `Getting better: your last 5 sessions averaged ${Math.round(recent)}, up ${diff} from the 5 before.`
+      : diff <= -5 ? `Slipping a little: your last 5 sessions averaged ${Math.round(recent)}, down ${-diff} from the 5 before.`
+      : `Holding steady: your last 5 sessions averaged ${Math.round(recent)}, about the same as before.`;
+  }
+
+  const brand = cssv("--brand") || PRIMARY();
+  // Sessions all within ~2 days: label them by time, not by the same date over and over.
+  const sameFewDays = sess.length > 1 && utcDate(sess[sess.length - 1].start_time) - utcDate(sess[0].start_time) < 2 * 864e5;
+  const when = (s) => utcDate(s.start_time).toLocaleString([], { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
   chart("chart-trend", {
     type: "line",
-    data: { labels: sess.map(s => fmtTs(s.start_time)), datasets: [{ label: "Focus score", data: sess.map(s => s.focus_score),
-      borderColor: jade, backgroundColor: /^#[0-9a-f]{6}$/i.test(jade) ? `${jade}1f` : jade, fill: true, tension: 0.25, pointRadius: 3, pointBackgroundColor: jade }] },
-    options: { plugins: { legend: { display: false } }, scales: { y: { min: 0, max: 100, border: { display: false } }, x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 8 } } } },
+    data: {
+      labels: sess.map(s => sameFewDays
+        ? utcDate(s.start_time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+        : utcDate(s.start_time).toLocaleDateString([], { day: "numeric", month: "short" })),
+      datasets: [{ label: "Focus score", data: scores, borderColor: brand, backgroundColor: brand,
+                   cubicInterpolationMode: "monotone", pointRadius: 4, pointHoverRadius: 6, pointBorderColor: cssv("--surface") || "#fff", pointBorderWidth: 2 }],
+    },
+    options: {
+      interaction: { mode: "index", intersect: false },
+      layout: { padding: { right: 44 } },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            title: (items) => when(sess[items[0].dataIndex]),
+            label: (ctx) => {
+              const v = ctx.raw;
+              return ` Score ${Math.round(v)}: ${v >= 70 ? "great" : v >= 40 ? "OK" : "low"}`;
+            },
+            afterLabel: (ctx) => {
+              const s = sess[ctx.dataIndex];
+              return ` ${fmtHM(s.duration_min)} long, ${fmtHM(s.productive_min)} in work apps${s.focus_mode ? ", focus mode" : ""}`;
+            },
+          },
+        },
+      },
+      scales: {
+        y: { min: 0, max: 100, border: { display: false }, afterBuildTicks: (ax) => { ax.ticks = [0, 40, 70, 100].map(v => ({ value: v })); } },
+        x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 8 } },
+      },
+    },
+    plugins: [scoreZones],
   });
+}
+
+state.sessionFilter = "all";        // "all" | "focus"
+
+// The Focus column: "25 min · Completed", or "–" for a normal session.
+function focusCell(s) {
+  if (!s.focus_mode) return `<span class="muted">–</span>`;
+  const plan = s.planned_minutes ? `${esc(fmtMin(Math.round(s.planned_minutes)))} ` : "";
+  const o = s.outcome || "finished";
+  return `${plan}<span class="outcome ${esc(o.replace(" ", "-"))}">${esc(OUTCOME_TEXT[o] || o)}</span>`;
 }
 
 function renderSessions(d) {
   const tb = $("#sessions-table tbody");
-  if (!d.sessions.length) { tb.innerHTML = `<tr><td colspan="11" class="empty">No sessions in this range. Try a longer range.</td></tr>`; return; }
-  tb.innerHTML = d.sessions.map(s => `
-    <tr class="clickable" data-id="${esc(s.session_id)}">
+  const rows = state.sessionFilter === "focus" ? d.sessions.filter(s => s.focus_mode) : d.sessions;
+  if (!rows.length) {
+    const msg = state.sessionFilter === "focus"
+      ? "No focus sessions in this range. Start one from the Focus mode tab."
+      : "No sessions in this range. Try a longer range.";
+    tb.innerHTML = `<tr><td colspan="12" class="empty">${msg}</td></tr>`; return;
+  }
+  tb.innerHTML = rows.map(s => `
+    <tr class="clickable${s.session_id === state.selectedSessionId ? " selected" : ""}" data-id="${esc(s.session_id)}">
       <td>${esc(s.session_id)}</td><td>${esc(fmtTs(s.start_time))}</td><td>${s.duration_min} min</td><td>${mix(s)}</td>
       <td>${s.productive_min}</td><td>${s.neutral_min}</td><td>${s.distracting_min}</td><td>${s.idle_min}</td>
-      <td>${s.switches}</td><td>${s.focus_mode ? "on" : "off"}</td>
+      <td>${s.switches}</td><td>${focusCell(s)}</td><td>${s.focus_mode ? esc(s.blocks) : ""}</td>
       <td class="score ${scoreCls(s.focus_score)}">${s.focus_score}</td>
     </tr>`).join("");
   tb.onclick = (e) => {
@@ -293,6 +458,15 @@ function renderSessions(d) {
     tb.querySelectorAll("tr").forEach(r => r.classList.remove("selected")); tr.classList.add("selected");
     showSession(+tr.dataset.id);
   };
+}
+
+function setSessionFilter(f) {
+  state.sessionFilter = f;
+  document.querySelectorAll("#session-filter button").forEach(x => {
+    const on = x.dataset.filter === f;
+    x.classList.toggle("active", on); x.setAttribute("aria-checked", on);
+  });
+  if (state.data) renderSessions(state.data);
 }
 
 // Draw activity/idle segments proportionally across a .timeline element.
@@ -314,16 +488,39 @@ function renderTimeline(tl, segments, from = null, until = null) {
 }
 
 async function showSession(id) {
-  const { segments } = await api(`/api/session/${id}?user=${state.user}`);
+  state.selectedSessionId = id;
+  let d;
+  try { d = await api(`/api/session/${id}`); } catch (_) { return; }
   const m = state.data.sessions.find(s => s.session_id === id);
   $("#session-detail").hidden = false;
   $("#detail-id").textContent = id;
+  const out = $("#detail-outcome");
+  out.hidden = !d.focus_mode;
+  if (d.focus_mode) {
+    out.textContent = `Focus · ${OUTCOME_TEXT[d.outcome] || d.outcome}`;
+    out.className = `outcome ${d.outcome.replace(" ", "-")}`;
+  }
+  const planned = d.planned_minutes ? `, planned ${d.planned_minutes}${NBSP}min` : "";
+  $("#detail-when").textContent = `${fmtWhen(d.start)}${planned}`;
 
-  renderTimeline($("#timeline"), segments);
-  $("#formula-values").textContent =
+  renderTimeline($("#timeline"), d.segments);
+  $("#detail-apps").innerHTML = d.apps.length
+    ? d.apps.map(a => `<li><span class="proc">${esc(a.process_name)}</span><span>${badge(a.category)} <span class="muted">${esc(fmtShort(a.seconds))}</span></span></li>`).join("")
+    : `<li class="fs-empty">No app activity was saved.</li>`;
+  $("#detail-blocked").innerHTML = d.blocked_apps.length
+    ? d.blocked_apps.map(b => `<li><span class="proc">${esc(b.process_name)}</span><span class="muted">${esc(describeActions(b))}</span></li>`).join("")
+    : `<li class="fs-empty">${d.focus_mode ? "No blocked app tried to open." : "Focus mode was off, so nothing was blocked."}</li>`;
+  if (m) $("#formula-values").textContent =
     `T_productive = ${m.productive_min} min, T_session = ${m.duration_min} min, T_idle = ${m.idle_min} min, ` +
     `S = ${m.switches} switches, S_max = ${state.data.s_max}/h  →  score ${m.focus_score}`;
   $("#session-detail").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+// Jump from the Focus tab to Sessions, filtered to focus sessions, with one opened.
+function openInSessions(id) {
+  document.querySelector('.tabs button[data-tab="sessions"]').click();
+  setSessionFilter("focus");
+  if (id && state.data?.sessions.some(s => s.session_id === id)) showSession(id);
 }
 
 function renderApps(d) {
@@ -379,19 +576,19 @@ function renderSettings(cats) {
     if (!e.target.classList.contains("cat-select")) return;
     const app_id = +e.target.closest("tr").dataset.app;
     await api("/api/categories", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ user: state.user, app_id, label: e.target.value }) });
+      body: JSON.stringify({ app_id, label: e.target.value }) });
     load();
   };
   tb.onclick = async (e) => {
     if (!e.target.classList.contains("reset")) return;
     const app_id = +e.target.closest("tr").dataset.app;
     await api("/api/categories", { method: "DELETE", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ user: state.user, app_id }) });
+      body: JSON.stringify({ app_id }) });
     load();
   };
   const blocked = cats.filter(c => c.effective_category === "distracting").map(c => c.process_name);
   $("#blocked-list").textContent = blocked.join(", ") || "none";
-  $("#focus-cmd").textContent = `focus_tracker.exe --user ${state.user} --focus --minutes ${state.focusMinutes}`;
+  syncFocusSetup();
   renderBlocked(cats);
 }
 
@@ -449,7 +646,7 @@ function setFormMsg(text, isError = false) {
 
 async function loadInstalled(refresh = false) {
   try {
-    state.installed = await api(`/api/installed-apps?user=${state.user}${refresh ? "&refresh=1" : ""}`);
+    state.installed = await api(`/api/installed-apps${refresh ? "?refresh=1" : ""}`);
   } catch (err) {
     state.installed = [];
     setFormMsg(err.message, true);
@@ -500,11 +697,11 @@ async function togglePickerApp(e) {
   try {
     if (app.blocked) {
       const row = state.cats.find(c => c.process_name === app.exe);
-      if (row) await jsonPost("/api/blocked", { user: state.user, app_id: row.app_id }, "DELETE");
+      if (row) await jsonPost("/api/blocked", { app_id: row.app_id }, "DELETE");
       app.blocked = false;
       setFormMsg(`Unblocked ${app.name}.`);
     } else {
-      await jsonPost("/api/blocked", { user: state.user, process_name: app.exe });
+      await jsonPost("/api/blocked", { process_name: app.exe });
       app.blocked = true;
       setFormMsg(`Blocked ${app.name}.`);
     }
@@ -521,7 +718,7 @@ async function removeBlocked(e) {
   const li = btn.closest("li[data-app]");
   const label = li.firstChild.textContent;
   try {
-    await jsonPost("/api/blocked", { user: state.user, app_id: +li.dataset.app }, "DELETE");
+    await jsonPost("/api/blocked", { app_id: +li.dataset.app }, "DELETE");
     setFormMsg(`Unblocked ${label}.`);
     const app = state.installed.find(a => a.exe === li.title);
     if (app) app.blocked = false;
@@ -531,12 +728,262 @@ async function removeBlocked(e) {
   }
 }
 
+/* ---------- teach the AI (active learning) ---------- */
+async function loadTeach() {
+  let items = [], ai = null;
+  try { [items, ai] = await Promise.all([api(`/api/teach`), api("/api/ai")]); } catch (_) { return; }
+  $("#teach-list").innerHTML = items.length
+    ? items.map(it => `
+      <li data-title="${esc(it.title)}">
+        <span class="teach-title" title="${esc(it.title)}">${esc(it.title)}</span>
+        <span class="teach-guess">${it.guess ? `AI guesses ${esc(it.guess)} (${Math.round(it.confidence * 100)}% sure)` : "AI has no guess yet"}, ${esc(fmtShort(it.seconds))} on it</span>
+        <span class="teach-buttons">
+          <button class="productive" data-label="productive">Productive</button>
+          <button class="neutral" data-label="neutral">Neutral</button>
+          <button class="distracting" data-label="distracting">Distracting</button>
+        </span>
+      </li>`).join("")
+    : `<li class="teach-empty">Nothing to label right now. Browse a bit with the tracker running, then come back.</li>`;
+  renderTeachStatus(ai);
+}
+
+function renderTeachStatus(ai) {
+  if (!ai) return;
+  const m = ai.metrics || {};
+  const labels = ai.labels || { user: 0, demo: 0 };
+  const score = m.unseen_sites_f1 != null
+    ? ` Current model: known sites ${m.known_sites_f1.toFixed(2)}, unseen sites ${m.unseen_sites_f1.toFixed(2)} (macro-F1).` : "";
+  $("#teach-status").textContent = ai.training
+    ? "Retraining… this takes about half a minute."
+    : `${labels.user} of your own labels, ${labels.demo} demo labels.${score}${ai.training_message ? " " + ai.training_message : ""}`;
+  $("#retrain-btn").disabled = !!ai.training;
+}
+
+async function labelTitle(e) {
+  const btn = e.target.closest("button[data-label]"); if (!btn) return;
+  const li = btn.closest("li[data-title]");
+  try {
+    await jsonPost("/api/training-samples", { title: li.dataset.title, label: btn.dataset.label });
+    li.classList.add("done");
+    li.querySelector(".teach-guess").textContent = `Labelled ${btn.dataset.label}. Press Retrain to teach the model.`;
+  } catch (err) { $("#teach-status").textContent = err.message; }
+}
+
+async function retrainModel() {
+  $("#retrain-btn").disabled = true;
+  try { renderTeachStatus(await jsonPost("/api/ai/retrain", {})); } catch (err) { $("#teach-status").textContent = err.message; return; }
+  const poll = setInterval(async () => {
+    const ai = await api("/api/ai").catch(() => null);
+    renderTeachStatus(ai);
+    if (ai && !ai.training) { clearInterval(poll); loadTeach(); load(); }
+  }, 3000);
+}
+
+/* ---------- website rules + AI status ---------- */
+async function loadSiteRules() {
+  let rules = [];
+  try { rules = await api(`/api/site-rules`); } catch (_) { return; }
+  const mine = rules.filter(r => !r.builtin), builtin = rules.filter(r => r.builtin);
+  $("#my-rules").innerHTML = mine.length
+    ? mine.map(r => `<li class="${esc(r.category)}" data-rule="${esc(r.rule_id)}">“${esc(r.pattern)}” → ${esc(r.category)}<button type="button" aria-label="Remove rule ${esc(r.pattern)}" title="Remove">×</button></li>`).join("")
+    : `<li class="rules-empty">No rules of your own yet. The built-in ones below still apply.</li>`;
+  $("#builtin-summary").textContent = `Built-in rules (${builtin.length})`;
+  $("#builtin-rules").innerHTML = builtin.map(r => `<li class="builtin ${esc(r.category)}">“${esc(r.pattern)}” → ${esc(r.category)}</li>`).join("");
+  try {
+    const ai = await api("/api/ai");
+    $("#ai-line").textContent = ai.available
+      ? `AI: ${ai.model_name}. It labels new browser tabs every minute${ai.last_run ? ` (last run ${ai.last_run})` : ""}.`
+      : `AI is off (${ai.last_message}). Website rules still apply.`;
+  } catch (_) { /* leave the line empty */ }
+}
+
+function setRuleMsg(text, isError = false) {
+  const el = $("#rule-msg");
+  el.textContent = text;
+  el.classList.toggle("is-error", isError);
+}
+
+async function addSiteRule(e) {
+  e.preventDefault();
+  const pattern = $("#rule-pattern").value.trim(), category = $("#rule-category").value;
+  if (!pattern) { setRuleMsg("Type part of the tab title first, for example youtube shorts", true); return; }
+  try {
+    let r;
+    if (/^https?:\/\//i.test(pattern)) {
+      // A link: FocusOs only sees tab titles, so look up the video's title.
+      setRuleMsg("Looking up that video's title…");
+      r = await jsonPost("/api/site-rules/from-link", { url: pattern, category });
+      setRuleMsg(`“${r.video_title}” now counts as ${r.category} whenever it's open.`);
+    } else {
+      r = await jsonPost("/api/site-rules", { pattern, category });
+      setRuleMsg(`Tabs containing “${r.pattern}” now count as ${r.category}.`);
+    }
+    $("#rule-pattern").value = "";
+    await loadSiteRules();
+    load();                                   // categories change everywhere at once
+  } catch (err) { setRuleMsg(err.message, true); }
+}
+
+async function removeSiteRule(e) {
+  const btn = e.target.closest("button"); if (!btn) return;
+  const li = btn.closest("li[data-rule]");
+  try {
+    await jsonPost("/api/site-rules", { rule_id: +li.dataset.rule }, "DELETE");
+    setRuleMsg("Rule removed.");
+    await loadSiteRules();
+    load();
+  } catch (err) { setRuleMsg(err.message, true); }
+}
+
 /* ---------- focus session ---------- */
 state.focusMinutes = 25;
 state.focus = { running: false };
 
 const pad2 = (n) => String(n).padStart(2, "0");
-const fmtClock = (s) => `${pad2(Math.floor(s / 60))}:${pad2(Math.floor(s % 60))}`;
+// 25:00, or 1:30:00 for sessions of an hour or more
+const fmtClock = (s) => s >= 3600
+  ? `${Math.floor(s / 3600)}:${pad2(Math.floor(s / 60) % 60)}:${pad2(Math.floor(s % 60))}`
+  : `${pad2(Math.floor(s / 60))}:${pad2(Math.floor(s % 60))}`;
+const fmtMin = (m) => m >= 60 ? `${Math.floor(m / 60)}${NBSP}h${m % 60 ? ` ${m % 60}${NBSP}min` : ""}` : `${m}${NBSP}min`;
+
+/* ---------- focus setup: length, breaks, plan preview ---------- */
+// Same rule as the tracker (BreakSchedule) and focus_control.break_plan:
+// focus `every` min, break `len` min, repeat; a break with no focus after it is skipped.
+function focusPlan(minutes, every, len) {
+  if (!every || !len) return [{ kind: "focus", start: 0, end: minutes }];
+  const out = [];
+  let t = 0;
+  while (t < minutes) {
+    const focusEnd = Math.min(t + every, minutes);
+    out.push({ kind: "focus", start: t, end: focusEnd });
+    if (focusEnd + len >= minutes) { out[out.length - 1].end = minutes; break; }
+    out.push({ kind: "break", start: focusEnd, end: focusEnd + len });
+    t = focusEnd + len;
+  }
+  return out;
+}
+
+state.breaks = { on: true, every: 50, len: 10 };
+try { Object.assign(state.breaks, JSON.parse(localStorage.getItem("focusos.breaks") || "{}")); } catch (_) { /* storage blocked */ }
+
+/* Timer wheels: a scroll-snap column per unit. Scroll, drag, tap a number,
+   or focus it and use the arrow keys / Page Up / Page Down. */
+const WHEEL_ITEM = 40;   // px, must match .wheel li height
+function makeWheel(el, max, onChange) {
+  const ul = el.querySelector("ul");
+  ul.innerHTML = Array.from({ length: max + 1 }, (_, i) => `<li data-v="${i}">${i}</li>`).join("");
+  let value = 0, settle = 0;
+  const mark = () => {
+    ul.querySelectorAll("li").forEach(li => li.classList.toggle("on", +li.dataset.v === value));
+    el.setAttribute("aria-valuenow", value);
+    el.setAttribute("aria-valuetext", `${value} ${el.getAttribute("aria-label").toLowerCase()}`);
+  };
+  const set = (v, smooth = true, notify = true) => {
+    value = Math.min(max, Math.max(0, v));
+    el.scrollTo({ top: value * WHEEL_ITEM, behavior: smooth ? "smooth" : "auto" });
+    mark();
+    if (notify) onChange();
+  };
+  el.addEventListener("scroll", () => {
+    const v = Math.min(max, Math.max(0, Math.round(el.scrollTop / WHEEL_ITEM)));
+    if (v !== value) { value = v; mark(); onChange(); }
+    clearTimeout(settle);
+    settle = setTimeout(() => { if (Math.abs(el.scrollTop - value * WHEEL_ITEM) > 1) set(value, true, false); }, 140);
+  }, { passive: true });
+  ul.addEventListener("click", (e) => { const li = e.target.closest("li"); if (li) set(+li.dataset.v); });
+  el.addEventListener("keydown", (e) => {
+    const step = { ArrowUp: -1, ArrowDown: 1, PageUp: -5, PageDown: 5 }[e.key];
+    if (e.key === "Home") { e.preventDefault(); set(0); }
+    else if (e.key === "End") { e.preventDefault(); set(max); }
+    else if (step) { e.preventDefault(); set(value + step); }
+  });
+  return { get value() { return value; }, set };
+}
+
+let wheelH = null, wheelM = null;
+
+// What will actually be sent: length, and breaks only if they fit.
+function focusSetup() {
+  const minutes = wheelH ? wheelH.value * 60 + wheelM.value : 25;
+  const valid = minutes >= 1 && minutes <= 480;
+  const b = state.breaks;
+  const fits = b.every + b.len < minutes;
+  const useBreaks = valid && b.on && fits;
+  return { minutes, valid, fits, useBreaks, every: useBreaks ? b.every : 0, len: useBreaks ? b.len : 0 };
+}
+
+function renderPlan(el, plan) {
+  el.innerHTML = plan.map(p => {
+    const len = p.end - p.start;
+    const label = p.kind === "break" ? `${len}` : fmtMin(len);
+    return `<span class="plan-seg ${p.kind}" style="flex-grow:${len}" title="${esc(p.kind === "break" ? "Break" : "Focus")}: ${esc(fmtMin(len))}"><span>${esc(label)}</span></span>`;
+  }).join("");
+}
+
+function syncFocusSetup() {
+  const f = focusSetup();
+  const hint = $("#length-hint");
+  hint.textContent = f.minutes > 480 ? "The longest session is 8 hours." : f.minutes < 1 ? "Turn a wheel to pick a length." : "";
+  hint.classList.toggle("is-error", !f.valid);
+  document.querySelectorAll("#durations button").forEach(x => x.classList.toggle("active", +x.dataset.min === f.minutes));
+
+  // Break cards: the chosen one is marked; ones that don't fit this length are greyed.
+  const b = state.breaks;
+  const chosen = b.on ? `${b.every}-${b.len}` : "off";
+  document.querySelectorAll("#break-options button").forEach(x => {
+    const on = x.dataset.break === chosen;
+    const [every, len] = x.dataset.break.split("-").map(Number);
+    const tooShort = x.dataset.break !== "off" && every + len >= f.minutes;
+    x.classList.toggle("active", on);
+    x.classList.toggle("too-short", tooShort);
+    x.setAttribute("aria-checked", on);
+    x.tabIndex = on ? 0 : -1;
+    x.title = tooShort ? `Needs a session longer than ${fmtMin(every + len)}` : "";
+  });
+  const note = $("#break-note");
+  note.textContent = !f.valid ? "" : b.on && !f.fits
+    ? `No break needed in a ${fmtMin(f.minutes)} session. Breaks start once a session is longer than ${fmtMin(b.every + b.len)}.`
+    : b.on ? "Blocked apps are allowed during a break. You'll get a notification when it starts and ends." : "";
+
+  const plan = focusPlan(f.minutes, f.every, f.len);
+  $("#plan").hidden = !f.valid || !f.useBreaks;
+  if (f.valid) renderPlan($("#plan"), plan);
+  const nBreaks = plan.filter(p => p.kind === "break").length;
+  const focusMin = plan.filter(p => p.kind === "focus").reduce((a, p) => a + p.end - p.start, 0);
+  const ends = new Date(Date.now() + f.minutes * 60000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  $("#plan-text").textContent = !f.valid ? "" : nBreaks
+    ? `${fmtMin(focusMin)} of focus and ${nBreaks} break${nBreaks === 1 ? "" : "s"}. Ends around ${ends}.`
+    : `${fmtMin(f.minutes)} of focus. Ends around ${ends}.`;
+
+  if (!state.focus.running && state.focus.supported !== false && state.focus.tracker_found !== false)
+    $("#focus-start").disabled = !f.valid;
+  $("#focus-cmd").textContent = `focus_tracker.exe --focus --minutes ${f.minutes}` +
+    (f.useBreaks ? ` --break-every ${f.every} --break ${f.len}` : "");
+}
+
+function saveBreaks() {
+  try { localStorage.setItem("focusos.breaks", JSON.stringify(state.breaks)); } catch (_) { /* storage blocked */ }
+  syncFocusSetup();
+}
+
+// The session as a ring, like a kitchen timer: the coloured part is what's
+// left (focus white, breaks amber) and shrinks clockwise as time passes.
+function renderRing(plan, total, elapsedMin) {
+  const R = 108, C = 2 * Math.PI * R, GAP = plan.length > 1 ? 1.2 : 0;   // GAP in % of the circle
+  const arc = (from, to, cls) => {
+    const len = Math.max(0, (to - from) - GAP);
+    if (len <= 0) return "";
+    return `<circle class="${cls}" cx="120" cy="120" r="${R}" pathLength="100"
+      stroke-dasharray="${len.toFixed(3)} ${(100 - len).toFixed(3)}" stroke-dashoffset="${(-from - GAP / 2).toFixed(3)}"/>`;
+  };
+  let out = `<circle class="timer-track" cx="120" cy="120" r="${R}"/>`;
+  for (const p of plan) {
+    const a = 100 * p.start / total, b = 100 * p.end / total, now = 100 * elapsedMin / total;
+    if (now < b) out += arc(Math.max(a, now), b, `timer-seg ${p.kind}`);
+  }
+  $("#timer-ring").innerHTML = `<g transform="rotate(-90 120 120)">${out}</g>`;
+  void C;
+}
 
 function renderFocus() {
   const f = state.focus;
@@ -553,25 +1000,45 @@ function renderFocus() {
     startBtn.disabled = true;
     setFocusNote("Build the tracker first (tracker\\build\\focus_tracker.exe), then refresh.", true);
   } else {
-    startBtn.disabled = false;
+    startBtn.disabled = !focusSetup().valid;
   }
 
+  let onBreak = false;
   if (f.running) {
     if (live) {
       $("#countdown").textContent = fmtClock(f.remaining_s);
-      const done = 1 - f.remaining_s / (f.minutes * 60);
-      $("#live-bar-fill").style.width = `${(100 * Math.min(Math.max(done, 0), 1)).toFixed(1)}%`;
       $("#live-note").textContent = "Changes to blocked apps apply to your next session.";
+      const elapsedS = f.minutes * 60 - f.remaining_s;
+      const nowMin = elapsedS / 60;
+      const plan = (f.plan || [{ kind: "focus", start_min: 0, end_min: f.minutes }])
+        .map(p => ({ kind: p.kind, start: p.start_min, end: p.end_min }));
+      const cur = plan.find(p => p.start <= nowMin && nowMin < p.end);
+      onBreak = cur?.kind === "break";
+      renderRing(plan, f.minutes, nowMin);
+      const next = plan.find(p => p.kind === "break" && p.start > nowMin);
+      const left = cur ? Math.max(0, Math.round(cur.end * 60 - elapsedS)) : 0;
+      $("#phase-line").textContent = onBreak
+        ? `Break, ${fmtClock(left)} left`
+        : next ? `Break in ${fmtClock(Math.max(0, Math.round(next.start * 60 - elapsedS)))}`
+               : plan.length > 1 ? "Last stretch" : "";
+      const ends = new Date(Date.now() + f.remaining_s * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      $("#timer-ends").textContent = `Ends ${ends}`;
+      if (onBreak) $("#live-note").textContent = "Your blocked apps are allowed until the break ends.";
     } else {
       $("#countdown").textContent = "On";
-      $("#live-bar-fill").style.width = "100%";
+      renderRing([{ kind: "focus", start: 0, end: 1 }], 1, 0);
+      $("#phase-line").textContent = "";
+      $("#timer-ends").textContent = "";
       $("#live-note").textContent = "The tracker was started outside the dashboard. You can still end it here.";
     }
   }
+  $("#live-heading").textContent = onBreak ? "On a break" : "Focusing";
+  $("#focus-hero").classList.toggle("is-break", onBreak);
 
   const chip = $("#today-focus");
   chip.classList.toggle("is-live", f.running);
-  $("#today-focus-text").textContent = f.running ? (live ? `Focusing, ${fmtClock(f.remaining_s)} left` : "Tracker running") : "Start focus";
+  $("#today-focus-text").textContent = f.running
+    ? (live ? `${onBreak ? "On a break" : "Focusing"}, ${fmtClock(f.remaining_s)} left` : "Tracker running") : "Start focus";
 }
 
 function setFocusNote(text, isError = false) {
@@ -590,7 +1057,7 @@ async function refreshFocus() {
 
 /* ---------- focus session details: live stats, summary, history ---------- */
 state.focusHistory = [];
-state.selectedFocusId = null;     // a session picked in the history table
+state.selectedFocusId = null;     // reserved: always show the latest finished session
 
 const OUTCOME_TEXT = { completed: "Completed", "ended early": "Ended early", running: "In progress", finished: "Finished" };
 const pctOf = (part, whole) => whole > 0 ? Math.round(100 * part / whole) : 0;
@@ -603,29 +1070,14 @@ function fmtWhen(iso) {
 
 async function loadFocusHistory() {
   try {
-    state.focusHistory = await api(`/api/focus/sessions?user=${state.user}`);
+    state.focusHistory = await api(`/api/focus/sessions`);
   } catch (_) {
     state.focusHistory = [];
   }
-  renderFocusHistory();
   const live = state.focusHistory.find(s => s.live);
   const pick = state.selectedFocusId ?? (state.focusHistory.find(s => !s.live) || null)?.session_id;
   if (live && state.focus.running) loadLiveDetail(live.session_id);
   if (pick) loadFocusSummary(pick); else $("#focus-summary").hidden = true;
-}
-
-function renderFocusHistory() {
-  const rows = state.focusHistory;
-  $("#focus-history-card").hidden = !rows.length;
-  $("#focus-history tbody").innerHTML = rows.map(s => `
-    <tr data-id="${esc(s.session_id)}" class="${s.session_id === state.selectedFocusId ? "selected" : ""}">
-      <td>${esc(fmtWhen(s.start))}</td>
-      <td>${esc(fmtShort(s.duration_s))}${s.planned_minutes ? ` <span class="small">of ${esc(s.planned_minutes)}${NBSP}min</span>` : ""}</td>
-      <td><span class="outcome ${esc(s.outcome.replace(" ", "-"))}">${esc(OUTCOME_TEXT[s.outcome] || s.outcome)}</span></td>
-      <td>${pctOf(s.productive_s, s.tracked_s)}%</td>
-      <td>${esc(s.blocks)}</td>
-      <td class="score ${scoreCls(s.focus_score)}">${s.live ? "–" : esc(Math.round(s.focus_score))}</td>
-    </tr>`).join("");
 }
 
 // "closed 2×, minimised 1×" (force-closes count as closed, marked "forced")
@@ -641,7 +1093,7 @@ function describeActions(b) {
 // Live stats inside the violet "Focusing" panel.
 async function loadLiveDetail(id) {
   let d;
-  try { d = await api(`/api/focus/session/${id}?user=${state.user}`); } catch (_) { return; }
+  try { d = await api(`/api/focus/session/${id}`); } catch (_) { return; }
   if (!d.live) return;
   $("#ls-prod").textContent = fmtShort(d.productive_s);
   $("#ls-dist").textContent = fmtShort(d.distracting_s);
@@ -676,11 +1128,12 @@ async function loadLiveDetail(id) {
 
 async function loadFocusSummary(id) {
   let d;
-  try { d = await api(`/api/focus/session/${id}?user=${state.user}`); } catch (_) { return; }
+  try { d = await api(`/api/focus/session/${id}`); } catch (_) { return; }
   const card = $("#focus-summary");
   card.hidden = false;
   const isLatest = state.focusHistory.find(s => !s.live)?.session_id === id;
   $("#fs-title").textContent = isLatest ? "Your last focus session" : `Focus session ${d.session_id}`;
+  $("#fs-see-all").dataset.id = d.session_id;
   const out = $("#fs-outcome");
   out.textContent = OUTCOME_TEXT[d.outcome] || d.outcome;
   out.className = `outcome ${d.outcome.replace(" ", "-")}`;
@@ -725,7 +1178,10 @@ async function startFocus() {
   btn.disabled = true;
   setFocusNote("Starting…");
   try {
-    state.focus = await jsonPost("/api/focus/start", { user: state.user, minutes: state.focusMinutes, on_block: state.onBlock });
+    const setup = focusSetup();
+    try { localStorage.setItem("focusos.minutes", String(setup.minutes)); } catch (_) { /* storage blocked */ }
+    state.focus = await jsonPost("/api/focus/start", { minutes: setup.minutes, on_block: state.onBlock,
+                                                       break_every: setup.every, break_min: setup.len });
     renderFocus();
     setFocusNote("");
     loadFocusHistory();
@@ -754,12 +1210,33 @@ async function stopFocus() {
 }
 
 function initFocus() {
+  // Timer wheels, starting at the last length used (25 min the first time).
+  let last = 25;
+  try { last = +localStorage.getItem("focusos.minutes") || 25; } catch (_) { /* storage blocked */ }
+  wheelH = makeWheel($("#wheel-h"), 8, syncFocusSetup);
+  wheelM = makeWheel($("#wheel-m"), 59, syncFocusSetup);
+  const setLength = (min, smooth) => { wheelH.set(Math.floor(min / 60), smooth, false); wheelM.set(min % 60, smooth, false); syncFocusSetup(); };
+  // The wheels only have a size once the Focus tab is visible: position them then.
+  state.applyWheelLength = () => setLength(focusSetup().minutes || last, false);
+  setLength(last, false);
   $("#durations").onclick = (e) => {
-    const b = e.target.closest("button[data-min]"); if (!b) return;
-    document.querySelectorAll("#durations button").forEach(x => { x.classList.toggle("active", x === b); x.setAttribute("aria-checked", x === b); });
-    state.focusMinutes = +b.dataset.min;
-    $("#focus-cmd").textContent = `focus_tracker.exe --user ${state.user} --focus --minutes ${state.focusMinutes}`;
+    const b = e.target.closest("button[data-min]"); if (b) setLength(+b.dataset.min, true);
   };
+  const pickBreak = (key) => {
+    if (key === "off") state.breaks.on = false;
+    else { const [every, len] = key.split("-").map(Number); Object.assign(state.breaks, { on: true, every, len }); }
+    saveBreaks();
+  };
+  $("#break-options").onclick = (e) => { const b = e.target.closest("button[data-break]"); if (b) pickBreak(b.dataset.break); };
+  $("#break-options").addEventListener("keydown", (e) => {
+    const dir = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key]; if (!dir) return;
+    e.preventDefault();
+    const btns = [...document.querySelectorAll("#break-options button")];
+    const i = btns.findIndex(x => x.classList.contains("active"));
+    const nxt = btns[(i + dir + btns.length) % btns.length];
+    pickBreak(nxt.dataset.break); nxt.focus();
+  });
+  syncFocusSetup();
   // Close or minimise blocked apps (remembered in this browser).
   try { state.onBlock = localStorage.getItem("focusos.onBlock") === "minimise" ? "minimise" : "close"; } catch (_) { state.onBlock = "close"; }
   const syncOnBlock = () => {
@@ -767,9 +1244,19 @@ function initFocus() {
       const on = x.dataset.action === state.onBlock;
       x.classList.toggle("active", on);
       x.setAttribute("aria-checked", on);
+      x.tabIndex = on ? 0 : -1;                // radio group: Tab reaches the chosen option only
     });
     updateFocusNote();
   };
+  // Arrow keys move between the options, like a native radio group.
+  document.querySelector(".on-block").addEventListener("keydown", (e) => {
+    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) return;
+    e.preventDefault();
+    state.onBlock = state.onBlock === "close" ? "minimise" : "close";
+    try { localStorage.setItem("focusos.onBlock", state.onBlock); } catch (_) { /* storage blocked */ }
+    syncOnBlock();
+    document.querySelector(`.on-block button[data-action="${state.onBlock}"]`).focus();
+  });
   document.querySelector(".on-block").onclick = (e) => {
     const b = e.target.closest("button[data-action]"); if (!b) return;
     state.onBlock = b.dataset.action;
@@ -780,6 +1267,48 @@ function initFocus() {
   $("#focus-start").onclick = startFocus;
   $("#focus-stop").onclick = stopFocus;
   $("#blocked-chips").onclick = removeBlocked;
+  // Theme switch: glass (default) <-> classic, remembered in this browser.
+  const syncThemeButton = () => {
+    const glass = document.documentElement.dataset.style === "glass";
+    $("#theme-name").textContent = glass ? "Glass" : "Classic";
+    $("#theme-toggle").setAttribute("aria-label", `Theme: ${glass ? "glass" : "classic"}. Switch theme`);
+  };
+  $("#theme-toggle").onclick = () => {
+    const next = document.documentElement.dataset.style === "glass" ? "classic" : "glass";
+    document.documentElement.dataset.style = next;
+    try { localStorage.setItem("focusos.theme", next); } catch (_) { /* storage blocked */ }
+    syncThemeButton();
+    if (state.data) load();                    // charts read colours when drawn: redraw them
+  };
+  syncThemeButton();
+
+  // Light / dark: Auto (follow Windows) -> Light -> Dark -> Auto ...
+  const MODES = ["auto", "light", "dark"];
+  const MODE_NAMES = { auto: "Auto", light: "Light", dark: "Dark" };
+  const currentMode = () => document.documentElement.dataset.theme || "auto";
+  const syncModeButton = () => {
+    const m = currentMode();
+    $("#mode-toggle").dataset.mode = m;
+    $("#mode-name").textContent = MODE_NAMES[m];
+    $("#mode-toggle").setAttribute("aria-label", `Colour mode: ${MODE_NAMES[m]}. Switch mode`);
+  };
+  $("#mode-toggle").onclick = () => {
+    const next = MODES[(MODES.indexOf(currentMode()) + 1) % MODES.length];
+    if (next === "auto") delete document.documentElement.dataset.theme;
+    else document.documentElement.dataset.theme = next;
+    try { localStorage.setItem("focusos.mode", next); } catch (_) { /* storage blocked */ }
+    syncModeButton();
+    if (state.data) load();                    // charts take their colours when drawn
+  };
+  // In Auto, follow Windows switching between light and dark while the page is open.
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+    if (currentMode() === "auto" && state.data) load();
+  });
+  syncModeButton();
+  $("#rule-form").onsubmit = addSiteRule;
+  $("#teach-list").onclick = labelTitle;
+  $("#retrain-btn").onclick = retrainModel;
+  $("#my-rules").onclick = removeSiteRule;
   $("#open-picker").onclick = openPicker;
   $("#close-picker").onclick = () => $("#app-picker").close();
   $("#picker-search").oninput = renderPicker;
@@ -788,15 +1317,9 @@ function initFocus() {
   $("#app-picker").addEventListener("click", (e) => { if (e.target.id === "app-picker") e.target.close(); });
   // The Today chip: jump to the Focus tab (or show the running session there).
   $("#today-focus").onclick = () => document.querySelector('.tabs button[data-tab="settings"]').click();
-  $("#focus-history tbody").onclick = (e) => {
-    const tr = e.target.closest("tr[data-id]"); if (!tr) return;
-    const id = +tr.dataset.id;
-    const s = state.focusHistory.find(x => x.session_id === id);
-    if (s?.live) return;                       // the live one is shown in the panel above
-    state.selectedFocusId = id;
-    renderFocusHistory();
-    loadFocusSummary(id);
-    $("#focus-summary").scrollIntoView({ behavior: "smooth", block: "start" });
+  $("#fs-see-all").onclick = (e) => { e.preventDefault(); openInSessions(+e.currentTarget.dataset.id); };
+  $("#session-filter").onclick = (e) => {
+    const b = e.target.closest("button[data-filter]"); if (b) setSessionFilter(b.dataset.filter);
   };
   refreshFocus();
 }
