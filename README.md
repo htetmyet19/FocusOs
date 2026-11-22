@@ -119,7 +119,7 @@ activity_log ──1:1── ai_predictions        title_training_samples
 
 (A zip built with `-NoExe` has no `FocusOs.exe`: install [Python 3.10+](https://www.python.org/downloads/), tick *Add python.exe to PATH*, and double-click **`start.bat`**, which installs the Python packages on first run.)
 
-The first start creates **your own private PostgreSQL database** in `%LOCALAPPDATA%\FocusOs\pgdata`. FocusOs runs it itself from the bundled `pgsql\` folder: no PostgreSQL installation, no admin rights, no Windows service. It listens only on `127.0.0.1:5544`, so it never clashes with another PostgreSQL. `stop.bat` ends a running focus session and stops the database.
+The first start creates **your own private PostgreSQL database** in `%LOCALAPPDATA%\FocusOs\pgdata`, with a random password kept next to it in `%LOCALAPPDATA%\FocusOs\pgpass.conf` (readable only by you). FocusOs runs it itself from the bundled `pgsql\` folder: no PostgreSQL installation, no admin rights, no Windows service. It listens only on `127.0.0.1:5544`, so it never clashes with another PostgreSQL. `stop.bat` ends a running focus session and stops the database.
 
 > Unzip somewhere normal (Documents, Downloads). Some antivirus programs remove batch files that run from the Temp folder.
 

@@ -31,6 +31,7 @@ texts and runs in milliseconds on a laptop.
 import argparse
 import configparser
 import json
+import os
 import re
 from collections import Counter
 from datetime import datetime, timezone
@@ -73,7 +74,9 @@ def load_database_config(config_path: Path) -> dict:
     db = parser["database"] if parser.has_section("database") else {}
     mode = str(db.get("mode", "server" if found else "portable")).strip().lower()
     if mode == "portable":
-        params = {"host": "127.0.0.1", "port": 5544, "user": "focus_user", "dbname": "study_tracker"}
+        app_dir = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "FocusOs"
+        params = {"host": "127.0.0.1", "port": 5544, "user": "focus_user", "dbname": "study_tracker",
+                  "passfile": str(app_dir / "pgpass.conf")}   # see portable_db.PGPASS
     else:
         params = {"host": db.get("host", "localhost"), "port": int(db.get("port", 5432)),
                   "user": db.get("user", "focus_user"), "dbname": db.get("database", "study_tracker")}

@@ -29,6 +29,11 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "FocusOs"
 DATA_DIR = APP_DIR / "pgdata"
 LOG_FILE = APP_DIR / "postgres.log"
 RUNTIME_INI = APP_DIR / "runtime.ini"      # connection settings handed to the C++ tracker
+# The password lives next to the database it belongs to. (Older versions used
+# the shared %APPDATA%\postgresql\pgpass.conf, where a second FocusOs database,
+# e.g. a test install, overwrote the password of the first.)
+PGPASS = APP_DIR / "pgpass.conf"
+LEGACY_PGPASS = Path(os.environ.get("APPDATA", Path.home())) / "postgresql" / "pgpass.conf"
 
 HOST = "127.0.0.1"
 PORT = 5544
@@ -47,29 +52,33 @@ def available() -> bool:
 
 
 def connection_params() -> dict:
-    return {"host": HOST, "port": PORT, "user": USER, "dbname": DATABASE}
+    return {"host": HOST, "port": PORT, "user": USER, "dbname": DATABASE, "passfile": str(PGPASS)}
 
 
 def _run(args, **kw):
     return subprocess.run(args, capture_output=True, text=True, creationflags=_NO_WINDOW, **kw)
 
 
-def _pgpass_path() -> Path:
-    return Path(os.environ.get("APPDATA", Path.home())) / "postgresql" / "pgpass.conf"
-
-
 def _save_password(password: str) -> None:
-    """Store the password where libpq looks for it, replacing old entries for our port."""
-    path = _pgpass_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lines = []
-    if path.exists():
-        lines = [l for l in path.read_text(encoding="ascii", errors="ignore").splitlines()
-                 if l.strip() and not l.startswith((f"{HOST}:{PORT}:", f"localhost:{PORT}:"))]
-    lines += [f"{HOST}:{PORT}:*:{USER}:{password}", f"localhost:{PORT}:*:{USER}:{password}"]
-    path.write_text("\n".join(lines) + "\n", encoding="ascii")
-    if sys.platform == "win32":   # readable by this Windows user only
-        _run(["icacls", str(path), "/inheritance:r", "/grant:r", f"{os.environ.get('USERNAME', '')}:(R,W)"])
+    """Write this database's password file (only this Windows user can read it)."""
+    APP_DIR.mkdir(parents=True, exist_ok=True)
+    PGPASS.write_text(f"{HOST}:{PORT}:*:{USER}:{password}\nlocalhost:{PORT}:*:{USER}:{password}\n",
+                      encoding="ascii")
+    if sys.platform == "win32":
+        _run(["icacls", str(PGPASS), "/inheritance:r", "/grant:r", f"{os.environ.get('USERNAME', '')}:(R,W)"])
+
+
+def _use_own_password_file() -> None:
+    """Point libpq at our password file: for this process (psycopg) and for the
+    tracker, which inherits the environment when the dashboard starts it.
+    Installs from before this change kept the password in the shared file:
+    copy our port's entry over once."""
+    if not PGPASS.exists() and LEGACY_PGPASS.exists():
+        for line in LEGACY_PGPASS.read_text(encoding="ascii", errors="ignore").splitlines():
+            if line.startswith(f"{HOST}:{PORT}:*:{USER}:"):
+                _save_password(line.split(":", 4)[4])
+                break
+    os.environ["PGPASSFILE"] = str(PGPASS)
 
 
 def _write_runtime_ini() -> None:
@@ -137,6 +146,7 @@ def start() -> str:
     first_run = not is_initialised()
     if first_run:
         _initdb()
+    _use_own_password_file()
     if not is_running():
         # Don't capture output here: pg_ctl starts the long-running postgres
         # process, which would inherit our pipes and keep them open forever,
