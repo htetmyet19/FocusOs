@@ -424,20 +424,26 @@ def focus_stop():
     return jsonify(focus_control.stop())
 
 
+def prepare_backend() -> None:
+    """Everything the dashboard needs before it serves pages; shared by this
+    file (browser mode) and desktop.py (its own window). Raises on failure."""
+    if db.mode() == "portable":
+        import portable_db
+        print(portable_db.start())
+    installed_apps.warm_cache_in_background()   # so the app picker opens instantly
+    ai_runtime.start_background(db.connection_params)   # label new browser tabs every minute
+
+
 if __name__ == "__main__":
     import sys
     import threading
     import webbrowser
 
-    if db.mode() == "portable":
-        import portable_db
-        try:
-            print(portable_db.start())
-        except portable_db.PortableDbError as e:
-            print(f"Error: {e}", file=sys.stderr)
-            sys.exit(1)
-    installed_apps.warm_cache_in_background()   # so the app picker opens instantly
-    ai_runtime.start_background(db.connection_params)   # label new browser tabs every minute
+    try:
+        prepare_backend()
+    except Exception as e:   # e.g. portable_db.PortableDbError
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
     url = "http://127.0.0.1:8000"
     print(f"FocusOs dashboard: {url}  (Ctrl+C to stop)")
     if os.environ.get("FOCUS_OPEN_BROWSER") == "1":

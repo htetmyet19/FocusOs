@@ -9,12 +9,14 @@ quietly does nothing and the website rules / app defaults still apply.
 The model file is one you trained yourself (ai/title_model.joblib, never
 downloaded), so loading it with joblib is safe.
 """
+import os
 import sys
 import threading
 import time
 from pathlib import Path
 
-AI_DIR = Path(__file__).resolve().parents[2] / "ai"
+# FOCUSOS_ROOT: set by desktop.py when packaged as an .exe (the folder holding it).
+AI_DIR = Path(os.environ.get("FOCUSOS_ROOT") or Path(__file__).resolve().parents[2]) / "ai"
 INTERVAL_SECONDS = 60
 
 _lock = threading.Lock()

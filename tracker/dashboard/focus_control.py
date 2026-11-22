@@ -15,7 +15,8 @@ import threading
 import time
 from pathlib import Path
 
-TRACKER_DIR = Path(__file__).resolve().parents[1]
+# FOCUSOS_ROOT: set by desktop.py when packaged as an .exe (the folder holding it).
+TRACKER_DIR = Path(os.environ.get("FOCUSOS_ROOT") or Path(__file__).resolve().parents[2]) / "tracker"
 TRACKER_EXE = Path(os.environ.get("FOCUS_TRACKER_EXE", TRACKER_DIR / "build" / "focus_tracker.exe"))
 CONFIG_PATH = Path(os.environ.get("FOCUS_CONFIG", TRACKER_DIR / "config.ini"))
 LOG_PATH = TRACKER_DIR / "build" / "focus_session.log"

@@ -1,10 +1,18 @@
 @echo off
-rem FocusOs: start the database and the dashboard, then open the browser.
+rem FocusOs: start the database and the dashboard in its own window.
+rem   start.bat            desktop window (default)
+rem   start.bat --browser  the old way: dashboard in your web browser
 rem First run also sets up Python packages and creates your private database.
 rem Note for editing: inside an "if ( ... )" block, a ")" in an echo ends the
 rem block early, so messages in blocks must not contain parentheses.
 setlocal
 cd /d "%~dp0"
+
+rem The packaged release has FocusOs.exe: no Python needed at all.
+if /i not "%~1"=="--browser" if exist "FocusOs.exe" (
+  start "" "FocusOs.exe"
+  exit /b 0
+)
 
 where python >nul 2>nul
 if errorlevel 1 (
@@ -16,11 +24,11 @@ if errorlevel 1 (
 
 rem The marker is written only after pip succeeds, so a half-finished install
 rem (for example, no internet) is retried next time instead of crashing.
-if not exist ".venv\focusos-ready.txt" (
+if not exist ".venv\focusos-ready-2.txt" (
   echo First run: installing the dashboard's Python packages. This takes a minute...
   if not exist ".venv\Scripts\python.exe" python -m venv .venv || goto :fail
   ".venv\Scripts\python.exe" -m pip install --disable-pip-version-check -q -r tracker\dashboard\requirements.txt || goto :fail
-  echo ok> ".venv\focusos-ready.txt"
+  echo ok> ".venv\focusos-ready-2.txt"
 )
 
 if not exist "tracker\build\focus_tracker.exe" (
@@ -28,9 +36,16 @@ if not exist "tracker\build\focus_tracker.exe" (
   echo Use the release zip, or build the tracker as the README explains.
 )
 
-set FOCUS_OPEN_BROWSER=1
-".venv\Scripts\python.exe" tracker\dashboard\server.py
-if errorlevel 1 goto :fail
+if /i "%~1"=="--browser" (
+  set FOCUS_OPEN_BROWSER=1
+  ".venv\Scripts\python.exe" tracker\dashboard\server.py
+  if errorlevel 1 goto :fail
+  exit /b 0
+)
+
+rem Desktop window. pythonw has no console, so this black window can close;
+rem startup errors appear in a message box instead.
+start "" ".venv\Scripts\pythonw.exe" tracker\dashboard\desktop.py
 exit /b 0
 
 :fail

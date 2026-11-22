@@ -249,6 +249,19 @@ The database keeps its `user_id` column (always 1): removing it would mean rewri
 
 Found and fixed during this phase: `planned_minutes` arrived as `15.0` (pandas int column with blanks), the new timer ring reused the goal ring's CSS class names, and the score curve overshot 0 and 100 with spline smoothing.
 
+### Phase 16: Desktop app (own window, no browser)
+
+| Test | Method | Result |
+|---|---|---|
+| Window | `python desktop.py`, window captured with `PrintWindow` | **Pass:** dashboard in a native "FocusOs" window with its own icon, no browser chrome; followed Windows dark mode |
+| Single instance | Second launch while open | **Pass:** exits in 0.08 s and brings the open window forward (named mutex `Local\FocusOs.Desktop`) |
+| Packaged .exe | PyInstaller one-folder build (187 MB) | **Pass:** all endpoints 200; AI model loads inside the .exe; tracker found and a real focus session with breaks started from it |
+| Frozen-app pitfalls | Process count, log file, ports | Found a second `FocusOs.exe` started by a library (fixed with `multiprocessing.freeze_support()`, now 1 process); no console, so output goes to `%LOCALAPPDATA%\FocusOs\desktop.log`; uses port 8765 so saved settings persist, any free port if taken |
+| Closing and reopening | Measured with `IsWindowVisible` / `WaitForExit` | Window hides in 46 ms; the process needs ~4 s to tear down, so a quick reopen used to exit silently; it now waits for the old copy (up to 10 s) and opens |
+| `start.bat` | Run on the existing install | **Pass:** reinstalled packages once (new marker), opened the window with `pythonw`, console closed |
+
+A test mistake: my scripted start/stop check ran while the user had just started a 50-minute focus session in the new window, and its stop request ended that session (#72) after 14 s. Later checks only opened and closed the app.
+
 ---
 
 ## 3. Final result
@@ -262,7 +275,7 @@ Found and fixed during this phase: `planned_minutes` arrived as `15.0` (pandas i
 | OS concepts shown | Threads (monitor only) | Bounded buffer, mutexes, atomics, process snapshots, CPU scheduling time, named mutex + event (IPC), Win32 message loop, process termination |
 | Security | Stored XSS, debug server | Output escaped, CSRF protection, input validation, no passwords in files |
 | AI | Untested Naive Bayes | 6 models compared with grouped and nested validation, data-driven threshold, report |
-| Distribution | Manual setup | 32 MB release zip, `start.bat`, published as GitHub release v1.0.0 |
+| Distribution | Manual setup | Release zip with `FocusOs.exe` desktop app (no Python needed), portable database; v1.0.0 published |
 
 ---
 

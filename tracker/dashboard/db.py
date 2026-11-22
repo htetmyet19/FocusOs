@@ -16,7 +16,8 @@ import psycopg
 
 VALID_LABELS = ("productive", "neutral", "distracting")
 
-DEFAULT_CONFIG = Path(__file__).resolve().parents[1] / "config.ini"
+# FOCUSOS_ROOT: set by desktop.py when packaged as an .exe (the folder holding it).
+DEFAULT_CONFIG = Path(os.environ.get("FOCUSOS_ROOT") or Path(__file__).resolve().parents[2]) / "tracker" / "config.ini"
 
 
 def _config_section():

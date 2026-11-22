@@ -41,17 +41,21 @@ installed on this PC, or `-Source <folder>` pointing at an extracted
 ### 4. Build the zip
 
 ```powershell
+.venv\Scripts\python.exe -m pip install pyinstaller    # once
 powershell -ExecutionPolicy Bypass -File scripts\make_release.ps1
 ```
 
-Creates `dist\FocusOs-<date>.zip` with the project files, `pgsql\` and the
-built tracker. It leaves out `config.ini`, passwords, caches and your data.
+Creates `dist\FocusOs-<date>.zip` with the project files, `pgsql\`, the
+built tracker and the desktop app (`FocusOs.exe` + `_internal\`, built by
+PyInstaller from `tracker\dashboard\FocusOs.spec`), so users need no Python.
+It leaves out `config.ini`, passwords, caches and your data. Add `-NoExe` for
+the old Python-based zip.
 
 ### 5. Test the zip like a new user
 
 1. Unzip it into an **empty folder outside Temp** (for example `Documents\FocusOs-test`).
-2. Double-click `start.bat`. The first run installs packages and creates a database.
-3. Check: the dashboard opens, **Focus mode → Add apps** lists your apps, a short focus session starts and ends.
+2. Double-click `FocusOs.exe`. The first run creates a database.
+3. Check: the window opens (no browser), **Focus mode → Add apps** lists your apps, a short focus session starts and ends.
 4. Run `stop.bat`, then delete the test folder.
 
 Don't skip this: the `start.bat` parenthesis bug in 1.0 was only found this way.
