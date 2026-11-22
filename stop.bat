@@ -1,6 +1,7 @@
 @echo off
 rem FocusOs: end any running focus session, then stop FocusOs's own database.
-rem (Close the dashboard window with Ctrl+C first, or just close it.)
+rem Closing the FocusOs window already stops the database when no focus
+rem session is running; this is for the browser mode and for leftovers.
 setlocal
 cd /d "%~dp0"
 

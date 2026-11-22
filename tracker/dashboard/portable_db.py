@@ -20,7 +20,8 @@ import tempfile
 import time
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
+# FOCUSOS_ROOT: set by desktop.py when packaged as an .exe (the folder holding it).
+ROOT = Path(os.environ.get("FOCUSOS_ROOT") or Path(__file__).resolve().parents[2])
 PG_BIN = ROOT / "pgsql" / "bin"
 DB_SQL = ROOT / "db"
 

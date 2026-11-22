@@ -760,3 +760,6 @@ pre { margin: 12px 0 8px; padding: 14px 16px; background: var(--fg); color: var(
   .meter-list li { grid-template-columns: 1fr 5.5rem; }
   .ml-track { grid-column: 1 / -1; grid-row: 2; }
 }
+
+/* Slim scrollbars: the page also runs in the desktop window, where a chunky browser scrollbar looks out of place */
+html { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--muted) 45%, transparent) transparent; }

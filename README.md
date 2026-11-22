@@ -60,7 +60,9 @@ Turn the timer wheels to any length (1 minute to 8 hours), pick breaks if you wa
 <td valign="top">
 
 ### 📊 Dashboard
-Flask + Chart.js: totals, focus score per session, a timeline of each session, top apps, foreground-vs-CPU and background processes, and your category settings. FocusOs is single-user: one PC, one person. Frosted-glass look by default (switch to **Classic** in the top bar) and **Auto / Light / Dark** colour mode; both choices are remembered in your browser.
+Flask + Chart.js: totals, focus score per session, a timeline of each session, top apps, foreground-vs-CPU and background processes, and your category settings. FocusOs is single-user: one PC, one person. Frosted-glass look by default (switch to **Classic** in the top bar) and **Auto / Light / Dark** colour mode; both choices are remembered.
+
+**Desktop app:** the dashboard runs in its own Windows window (`desktop.py`: Flask on a background thread + an Edge WebView2 window via pywebview), with its own icon and taskbar entry, no browser or address bar. A named mutex keeps it single-instance (opening it again brings the existing window forward), and closing the window stops the portable database unless a focus session is still running. `start.bat --browser` still opens it in a browser instead.
 
 </td>
 </tr>
@@ -113,10 +115,11 @@ activity_log ──1:1── ai_predictions        title_training_samples
 ### Quick start: no database to install
 
 1. Download the release zip (`FocusOs-<date>.zip`) and unzip it, for example into Documents.
-2. Install [Python 3.10+](https://www.python.org/downloads/) if you don't have it (tick *Add python.exe to PATH*).
-3. Double-click **`start.bat`**. The dashboard opens in your browser.
+2. Double-click **`FocusOs.exe`**. FocusOs opens in its own window. Nothing else to install.
 
-The first start installs the dashboard's Python packages and creates **your own private PostgreSQL database** in `%LOCALAPPDATA%\FocusOs\pgdata`. FocusOs runs it itself from the bundled `pgsql\` folder: no PostgreSQL installation, no admin rights, no Windows service. It listens only on `127.0.0.1:5544`, so it never clashes with another PostgreSQL. `stop.bat` ends a running focus session and stops the database.
+(A zip built with `-NoExe` has no `FocusOs.exe`: install [Python 3.10+](https://www.python.org/downloads/), tick *Add python.exe to PATH*, and double-click **`start.bat`**, which installs the Python packages on first run.)
+
+The first start creates **your own private PostgreSQL database** in `%LOCALAPPDATA%\FocusOs\pgdata`. FocusOs runs it itself from the bundled `pgsql\` folder: no PostgreSQL installation, no admin rights, no Windows service. It listens only on `127.0.0.1:5544`, so it never clashes with another PostgreSQL. `stop.bat` ends a running focus session and stops the database.
 
 > Unzip somewhere normal (Documents, Downloads). Some antivirus programs remove batch files that run from the Temp folder.
 
@@ -192,8 +195,11 @@ focus_tracker [options]
 ```powershell
 cd tracker\dashboard
 pip install -r requirements.txt
-python server.py        # http://127.0.0.1:8000
+python desktop.py       # its own window
+python server.py        # or in the browser: http://127.0.0.1:8000
 ```
+
+**One .exe:** `pip install pyinstaller` then `pyinstaller tracker\dashboard\FocusOs.spec` builds `dist\FocusOs\FocusOs.exe` (a one-folder build: it opens fast because nothing is unpacked at start). `scripts\make_release.ps1` does this for you. The icon is drawn by `scripts\make_icon.py`.
 
 **Focus mode tab:** press **Add apps** to choose from the apps installed on this PC (Start menu apps and Microsoft Store apps, found by `dashboard/list_installed_apps.ps1`; Windows' own tools are left out), remove one with ×, then turn the timer wheels (or tap a quick pick) and choose breaks (none, 5 min every 25, 10 every 50 or 15 every 90) and press **Start focus**. A break is skipped when no focus time would follow it; the preview bar shows the plan before you start. Only installed apps can be added. The dashboard starts the tracker in the background with `--focus --minutes N` and shows a countdown ring (break slices in amber) with live stats (time productive and distracted, apps pushed away, the app in front, a timeline); **End now** stops it cleanly. Afterwards a summary shows the focus score, whether you completed or ended early, the apps you used and every blocked attempt, with a link to all focus sessions. **Sessions tab:** every session, with a Focus column (planned length and result) and blocked count, an **All / Focus sessions only** filter, and a detail panel with the timeline, the apps you used and the blocked attempts. **Today tab:** each chart starts with a one-sentence answer (best day, best time of day, whether your focus score is improving) and ends with how to read it. Write requests only accept JSON from the dashboard's own page, so other websites cannot start sessions or change your block list.
 
