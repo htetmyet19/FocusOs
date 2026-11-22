@@ -260,7 +260,11 @@ Found and fixed during this phase: `planned_minutes` arrived as `15.0` (pandas i
 | Closing and reopening | Measured with `IsWindowVisible` / `WaitForExit` | Window hides in 46 ms; the process needs ~4 s to tear down, so a quick reopen used to exit silently; it now waits for the old copy (up to 10 s) and opens |
 | `start.bat` | Run on the existing install | **Pass:** reinstalled packages once (new marker), opened the window with `pythonw`, console closed |
 
-A test mistake: my scripted start/stop check ran while the user had just started a 50-minute focus session in the new window, and its stop request ended that session (#72) after 14 s. Later checks only opened and closed the app.
+| New-user install (release zip) | Unzipped into an empty folder, `LOCALAPPDATA` pointed at an empty folder, `FocusOs.exe` | **Pass:** private database created, window opened, all endpoints 200 |
+| AI on a new PC | Same clean install | Found: no model and no training titles, so the AI could never switch on. **Fixed:** the release zip now ships a ready model, trained by `make_release.ps1` (`title_classifier.py train-release`) **only on the generated demo titles**, never on the developer's own window titles (a TF-IDF model stores words from its training data), so the AI works the moment the app opens. Backup for source installs: with no model and no titles the app loads the demo titles and trains once in the background (`ai_runtime.bootstrap_if_needed`) |
+| Database stops on close | Clean install, close the window | Found: pywebview's `closed` event (background thread during shutdown) never ran our cleanup, so the portable database kept running. **Fixed:** cleanup runs on the main thread after `webview.start()` returns; log shows "FocusOs database stopped.", process gone in 2.4 s |
+
+Two test mistakes, both mine: scripted start/stop checks ran while the user had just started a focus session in the app, and their stop request (the stop event is shared by every copy, by design) ended the user's sessions #72 (after 14 s) and #73 (a 60-minute session, after 9 min). The second time, a "is a tracker running?" check printed nothing because of a PowerShell output quirk and was misread as "no". Rule adopted: no automated start/stop on the user's PC while they use it; check running sessions in the database, not from display output.
 
 ---
 

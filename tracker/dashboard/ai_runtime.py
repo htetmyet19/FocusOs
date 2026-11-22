@@ -6,8 +6,10 @@
 
 If scikit-learn is missing or no model has been trained yet, everything here
 quietly does nothing and the website rules / app defaults still apply.
-The model file is one you trained yourself (ai/title_model.joblib, never
-downloaded), so loading it with joblib is safe.
+The model file (ai/title_model.joblib) is either one you trained yourself or
+the demo-only model that ships inside the release zip, next to FocusOs.exe.
+joblib files can run code when loaded, so only load ones from those two
+sources: the release model is as trustworthy as the program itself.
 """
 import os
 import sys
@@ -145,8 +147,34 @@ def retrain_in_background(db_params: dict) -> bool:
     return True
 
 
+def bootstrap_if_needed(db_params: dict) -> str:
+    """Backup for installs without the shipped model (e.g. built from source):
+    with no model and no training titles the AI could never switch on, so load
+    the demo titles and train once in the background. Does nothing if a model
+    exists (the release zip ships one) or any training titles are there."""
+    if (AI_DIR / "title_model.joblib").exists():
+        return "model present"
+    try:
+        import psycopg
+        with psycopg.connect(**db_params) as conn:
+            n = conn.execute("SELECT count(*) FROM title_training_samples").fetchone()[0]
+            if n == 0:
+                if str(AI_DIR) not in sys.path:
+                    sys.path.insert(0, str(AI_DIR))
+                import demo_data   # noqa: E402
+                demo_data.insert_titles(conn)
+    except Exception as e:
+        return f"bootstrap skipped: {e}"
+    retrain_in_background(db_params)
+    return "training a first model"
+
+
 def start_background(get_db_params) -> None:
     def loop():
+        try:
+            _status.update(last_message=bootstrap_if_needed(get_db_params()))
+        except Exception as e:
+            _status.update(last_message=f"bootstrap error: {e}")
         while True:
             try:
                 msg = classify_new_rows(get_db_params())

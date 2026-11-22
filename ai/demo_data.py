@@ -232,6 +232,19 @@ def reset(conn) -> None:
     cur.execute("DELETE FROM users WHERE user_id = 99")
 
 
+def insert_titles(conn) -> dict:
+    """Replace the demo training titles; returns {label: count}."""
+    conn.execute("DELETE FROM title_training_samples WHERE source = 'demo'")
+    rows = generate_titles()
+    conn.cursor().executemany(
+        "INSERT INTO title_training_samples (window_title, label, source, template_group) "
+        "VALUES (%s, %s, 'demo', %s)", rows)
+    by = {}
+    for _, label, _ in rows:
+        by[label] = by.get(label, 0) + 1
+    return by
+
+
 def main() -> None:
     import psycopg
     parser = argparse.ArgumentParser(description="Create or remove FocusOs demo training titles.")
@@ -245,15 +258,8 @@ def main() -> None:
             print("Removed all demo data (demo training titles, and the old demo user if present).")
             return
         # Re-running replaces the old demo titles instead of piling them up.
-        conn.execute("DELETE FROM title_training_samples WHERE source = 'demo'")
-        rows = generate_titles()
-        conn.cursor().executemany(
-            "INSERT INTO title_training_samples (window_title, label, source, template_group) "
-            "VALUES (%s, %s, 'demo', %s)", rows)
-        by = {}
-        for _, label, _ in rows:
-            by[label] = by.get(label, 0) + 1
-        print(f"Added {len(rows)} demo training titles from {len(TEMPLATES)} templates: {by}")
+        by = insert_titles(conn)
+        print(f"Added {sum(by.values())} demo training titles from {len(TEMPLATES)} templates: {by}")
 
 
 if __name__ == "__main__":

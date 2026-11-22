@@ -194,7 +194,22 @@ def _nested_unseen(X, y, g, names):
 def train_model(database_config: dict, source: str = "all") -> None:
     with psycopg.connect(**database_config) as conn:
         titles, labels, groups, sources = _load_samples(conn, source)
+    _fit_and_save(titles, labels, groups, sources, MODEL_PATH, write_report=True)
 
+
+def train_release_model(out_path: Path) -> None:
+    """The model shipped in the release zip: trained ONLY on the generated demo
+    titles (in memory, fixed seed), never on anyone's real window titles,
+    because a TF-IDF model stores words from its training titles."""
+    from demo_data import generate_titles
+    rows = generate_titles()
+    titles = [t for t, _, _ in rows]
+    labels = [l for _, l, _ in rows]
+    groups = [g for _, _, g in rows]
+    _fit_and_save(titles, labels, groups, Counter({"demo": len(rows)}), Path(out_path), write_report=False)
+
+
+def _fit_and_save(titles, labels, groups, sources, model_path: Path, write_report: bool) -> None:
     if len(titles) < 30 or not set(labels) <= VALID_LABELS or len(set(labels)) < 2:
         raise ValueError("Need at least 30 labelled titles with at least two of: productive, neutral, distracting. "
                          "Add your own to title_training_samples, or run: python ai/demo_data.py titles")
@@ -244,16 +259,17 @@ def train_model(database_config: dict, source: str = "all") -> None:
                     "known_sites_f1": results[best_name]["known"]["macro_f1"],
                     "nested_unseen_f1_mean": nested_mean, "nested_unseen_f1_std": nested_std,
                     "random_split_f1": naive_f1, "precision_at_threshold": prec, "coverage_at_threshold": cov},
-    }, MODEL_PATH)
+    }, model_path)
 
-    _write_report(results, best_name, nested_mean, nested_std, chosen, naive_f1, threshold, prec, cov,
-                  report, cm, errors, len(X), n_groups, sources, Counter(labels))
+    if write_report:
+        _write_report(results, best_name, nested_mean, nested_std, chosen, naive_f1, threshold, prec, cov,
+                      report, cm, errors, len(X), n_groups, sources, Counter(labels))
     print(f"\nChosen: {best_name}")
     print(f"  known sites F1 {results[best_name]['known']['macro_f1']:.3f} | unseen sites F1 "
           f"{results[best_name]['unseen']['macro_f1']:.3f} | nested estimate {nested_mean:.3f} +/- {nested_std:.3f} "
           f"| random split would claim {naive_f1:.3f}")
     print(f"  threshold {threshold:.2f}: precision {prec:.2f}, labels {cov:.0%} of productive/distracting rows (unseen sites)")
-    print(f"Saved {MODEL_PATH.name} and {REPORT_PATH.name}")
+    print(f"Saved {model_path}" + (f" and {REPORT_PATH.name}" if write_report else ""))
 
 
 def _write_report(results, best, nested_mean, nested_std, chosen, naive_f1, thr, prec, cov,
@@ -399,7 +415,9 @@ def classify_browser_titles(database_config: dict, threshold, recheck: bool = Fa
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train and run the FocusOs title classifier.")
-    parser.add_argument("command", choices=("train", "classify", "info"))
+    parser.add_argument("command", choices=("train", "train-release", "classify", "info"))
+    parser.add_argument("--out", type=Path, default=None,
+                        help="train-release: where to write the demo-only model (needs no database).")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help="Path to tracker/config.ini")
     parser.add_argument("--source", choices=("all", "user", "demo"), default="all",
                         help="Which labelled titles to train on (default: all).")
@@ -410,6 +428,11 @@ def main() -> None:
 
     if args.threshold is not None and not 0.0 <= args.threshold <= 1.0:
         raise ValueError("threshold must be between 0 and 1.")
+    if args.command == "train-release":
+        if args.out is None:
+            raise ValueError("train-release needs --out <path>")
+        train_release_model(args.out)
+        return
     if args.command == "info":
         b = joblib.load(MODEL_PATH)
         print(json.dumps({k: v for k, v in b.items() if k != "model"}, indent=2, default=str))
