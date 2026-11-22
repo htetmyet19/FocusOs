@@ -132,19 +132,22 @@ def main() -> None:
     url = f"http://127.0.0.1:{port}/"
     print(f"{APP_NAME} desktop: serving {url}")
 
-    window = webview.create_window(
+    webview.create_window(
         APP_NAME, url,
         width=1320, height=900, min_size=(420, 640),
         # the page's canvas colour (dark or light), so there is no flash while it loads
         background_color="#0C0A1F" if windows_uses_dark_mode() else "#EEF0FF",
         text_select=True,
     )
-    window.events.closed += lambda: on_closed(httpd)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     # private_mode=False + storage_path: keep localStorage (theme, goal, last
     # timer length) between launches instead of starting fresh every time.
+    # start() blocks until the window has closed; cleanup then runs here, on
+    # the main thread (pywebview's own "closed" event fires on a background
+    # thread during shutdown and did not run reliably).
     webview.start(private_mode=False, storage_path=str(DATA_DIR / "webview"),
                   icon=str(ICON) if ICON.exists() else None)
+    on_closed(httpd)
 
 
 if __name__ == "__main__":

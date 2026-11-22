@@ -4,6 +4,8 @@
 #   - pgsql\                     portable PostgreSQL (scripts\get_portable_postgres.ps1)
 #   - tracker\build\focus_tracker.exe + the DLLs next to it
 #   - FocusOs.exe + _internal\    the desktop app (PyInstaller), so users need no Python
+#   - ai\title_model.joblib       a ready AI model, trained ONLY on generated demo
+#                                 titles (never on your own window titles)
 # They unzip it and double-click FocusOs.exe (or start.bat, which opens it).
 #
 #   powershell -ExecutionPolicy Bypass -File scripts\make_release.ps1
@@ -56,6 +58,12 @@ if (-not $NoExe) {
 # Never ship local settings or data, even if they somehow got staged.
 Get-ChildItem $stage -Recurse -Include "config.ini", "*.joblib", "focus_session.log", "pgpass.conf" -File |
     Remove-Item -Force
+
+# 5. A ready-to-use AI model, so the AI works the moment the app opens. Trained
+#    here from the generated demo titles only: your own model is never shipped,
+#    because a TF-IDF model stores words from the titles it was trained on.
+& $Python "ai\title_classifier.py" train-release --out (Join-Path $stage "ai\title_model.joblib")
+if ($LASTEXITCODE -ne 0) { throw "Training the release AI model failed" }
 
 if (Test-Path $zip) { Remove-Item $zip -Force }
 Compress-Archive -Path $stage -DestinationPath $zip -CompressionLevel Optimal

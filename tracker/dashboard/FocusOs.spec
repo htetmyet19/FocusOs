@@ -25,7 +25,7 @@ a = Analysis(
     # The AI model is a pickled scikit-learn pipeline and "Retrain" imports the
     # training script; both load sklearn classes by name, which PyInstaller
     # cannot see. Bundle sklearn whole rather than guess and crash later.
-    hiddenimports=collect_submodules("sklearn") + ["title_features", "title_classifier", "portable_db"],
+    hiddenimports=collect_submodules("sklearn") + ["title_features", "title_classifier", "demo_data", "portable_db"],
     excludes=["tkinter", "matplotlib", "IPython", "pytest"],
     noarchive=False,
 )
